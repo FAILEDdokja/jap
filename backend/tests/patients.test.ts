@@ -143,6 +143,8 @@ describe("POST /api/v1/patients — ABHA is optional", () => {
     const { patient } = res.json();
     expect(patient.status).toBe("provisional");
     expect(patient.state).toBe("provisional");
+    expect(patient.gender).toBeNull();
+    expect(patient.dob).toBeNull();
     await app.close();
   });
 
@@ -181,6 +183,22 @@ describe("POST /api/v1/patients — ABHA is optional", () => {
     await app.close();
   });
 
+  it("rejects impossible calendar dates", async () => {
+    const app = await buildApp();
+    const cookie = await doctorCookie(app);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/patients",
+      headers: { cookie },
+      payload: { name: "Impossible Date", gender: "Male", dob: "2026-02-30" },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("validation_failed");
+    await app.close();
+  });
+
   it("enforces canonical (type, value) uniqueness — formatted/case variants conflict (409)", async () => {
     const app = await buildApp();
     const cookie = await doctorCookie(app);
@@ -204,6 +222,30 @@ describe("POST /api/v1/patients — ABHA is optional", () => {
       // The conflict response leaks no patient data.
       expect(res.body).not.toContain("Amit");
     }
+    await app.close();
+  });
+
+  it("rejects duplicate identifiers within one create request", async () => {
+    const app = await buildApp();
+    const cookie = await doctorCookie(app);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/patients",
+      headers: { cookie },
+      payload: {
+        name: "Duplicate In Request",
+        gender: "Male",
+        dob: "1980-02-02",
+        identities: [
+          { type: "ABHA_NUMBER", value: "11-1111-1111-1111" },
+          { type: "ABHA_NUMBER", value: "11111111111111" },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("identity_conflict");
     await app.close();
   });
 });

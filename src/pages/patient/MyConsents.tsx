@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useAuth } from "@/auth/AuthContext";
 import { useStore } from "@/data/useStore";
 import { patientBundle, orgById, decideConsent, metrics } from "@/data/store";
@@ -7,8 +8,15 @@ import { Card, CardHeader, CardBody, Badge, Button, EmptyState } from "@/compone
 import { CONSENT_STATUS_TONE } from "@/lib/status";
 import { fmtDate, relative } from "@/lib/format";
 import { ShieldCheck, ShieldX } from "lucide-react";
+import { ApiError } from "@/api/client";
+import { approveConsent, listConsents, rejectConsent, revokeConsent, type ApiConsent } from "@/api/consents";
 
 export default function MyConsents() {
+  const { mode } = useAuth();
+  return mode === "api" ? <ApiMyConsents /> : <DemoMyConsents />;
+}
+
+function DemoMyConsents() {
   useStore();
   const { user } = useAuth();
   const toast = useToast();
@@ -81,4 +89,37 @@ export default function MyConsents() {
       </Card>
     </div>
   );
+}
+
+function ApiMyConsents() {
+  const { user } = useAuth();
+  const [consents, setConsents] = useState<ApiConsent[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const patientId = user?.patientId;
+  const load = () => {
+    if (!patientId) return;
+    void listConsents({ patientId }).then(setConsents).catch((e) => setError(e instanceof ApiError ? e.message : "Unable to load consents."));
+  };
+  useEffect(load, [patientId]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!patientId) return <EmptyState icon={<ShieldCheck className="h-5 w-5" />} title="Patient account required" description="This server session is not associated with a patient record." />;
+
+  const pending = consents.filter((consent) => consent.status === "REQUESTED");
+  const active = consents.filter((consent) => consent.status === "APPROVED");
+  const historic = consents.filter((consent) => !["REQUESTED", "APPROVED"].includes(consent.status));
+  const decide = async (action: "approve" | "reject" | "revoke", consent: ApiConsent) => {
+    try {
+      if (action === "approve") await approveConsent(consent.id);
+      if (action === "reject") await rejectConsent(consent.id, "Declined by patient.");
+      if (action === "revoke") await revokeConsent(consent.id, "Revoked by patient.");
+      load();
+    } catch (e) { setError(e instanceof ApiError ? e.message : "Unable to update consent."); }
+  };
+
+  const ConsentRow = ({ consent, actions }: { consent: ApiConsent; actions?: React.ReactNode }) => <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line p-3"><div><p className="text-[13px] font-semibold text-zinc-100">{consent.requesterName}</p><p className="text-[12px] text-zinc-400">{consent.purpose} · {consent.recordTypes.join(", ")}</p><p className="mt-0.5 text-[11px] text-zinc-500">Requested {fmtDate(consent.createdAt)} · valid until {fmtDate(consent.validUntil)}</p></div><div className="flex items-center gap-2"><Badge tone={consent.status === "REJECTED" || consent.status === "REVOKED" ? "critical" : consent.status === "REQUESTED" ? "warning" : "positive"}>{consent.status.toLowerCase()}</Badge>{actions}</div></div>;
+  return <div><PageHeader title="Consent & access" description="Server-backed consent decisions. Each decision is enforced by the API." />
+    {error && <p className="mb-4 rounded-lg bg-rose-500/10 px-3 py-2 text-[12px] text-rose-300 ring-1 ring-inset ring-rose-500/25">{error}</p>}
+    <Card><CardHeader title="Requests awaiting your decision" description={`${pending.length} pending`} /><CardBody className="space-y-3">{pending.length ? pending.map((consent) => <ConsentRow key={consent.id} consent={consent} actions={<><Button size="sm" icon={<ShieldCheck className="h-4 w-4" />} onClick={() => void decide("approve", consent)}>Approve</Button><Button size="sm" variant="secondary" icon={<ShieldX className="h-4 w-4" />} onClick={() => void decide("reject", consent)}>Deny</Button></>} />) : <p className="text-[13px] text-zinc-400">No requests need your attention.</p>}</CardBody></Card>
+    <Card className="mt-6"><CardHeader title="Active access" /><CardBody className="space-y-3">{active.length ? active.map((consent) => <ConsentRow key={consent.id} consent={consent} actions={<Button size="sm" variant="danger" icon={<ShieldX className="h-4 w-4" />} onClick={() => void decide("revoke", consent)}>Revoke</Button>} />) : <p className="text-[13px] text-zinc-400">No organization currently has consented access.</p>}</CardBody></Card>
+    <Card className="mt-6"><CardHeader title="History" /><CardBody className="space-y-2">{historic.length ? historic.map((consent) => <ConsentRow key={consent.id} consent={consent} />) : <EmptyState icon={<ShieldCheck className="h-5 w-5" />} title="No past consent activity" />}</CardBody></Card>
+  </div>;
 }

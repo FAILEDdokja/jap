@@ -9,21 +9,23 @@
  * The surface below (user, signIn, signOut, loading) is identical either way.
  */
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { User } from "@/data/types";
+import type { Organization, Role, User } from "@/data/types";
 import { usersAll, orgById, subscribe } from "@/data/store";
 import { supabase, dataMode } from "@/lib/supabase";
+import { ApiError, apiEnabled } from "@/api/client";
+import { authenticate, getSession, signOut as apiSignOut, type SessionUser } from "@/api/auth";
 
 const SESSION_KEY = "jan-arogya-nexus:session:userId";
 
 type AuthState = {
   user: User | null;
-  org: ReturnType<typeof orgById>;
+  org: Organization | null;
   loading: boolean;
   error: string | null;
-  mode: "demo" | "supabase";
-  signIn: (email: string, password?: string) => Promise<boolean>;
+  mode: "demo" | "supabase" | "api";
+  signIn: (identifier: string, password?: string, role?: Role) => Promise<boolean>;
   signInAs: (userId: string) => void;
-  signOut: () => void;
+  signOut: () => Promise<void>;
 };
 
 const Ctx = createContext<AuthState | undefined>(undefined);
@@ -38,6 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [apiUser, setApiUser] = useState<SessionUser | null>(null);
   const [, force] = useState(0);
 
   // keep in sync with store mutations (e.g. staff edits)
@@ -46,7 +49,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
     (async () => {
-      if (dataMode === "supabase" && supabase) {
+      if (dataMode === "api" && apiEnabled) {
+        try {
+          const session = await getSession();
+          if (active) setApiUser(session);
+        } catch (e) {
+          if (active && !(e instanceof ApiError && e.status === 401)) setError("Unable to restore the server session.");
+        }
+      } else if (dataMode === "supabase" && supabase) {
         const { data } = await supabase.auth.getSession();
         if (active && data.session?.user?.email) {
           const match = usersAll().find((u) => u.email.toLowerCase() === data.session!.user.email!.toLowerCase());
@@ -63,12 +73,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const user = useMemo(() => usersAll().find((u) => u.id === userId) ?? null, [userId]);
-  const org = user ? orgById(user.orgId) : null;
+  const user = useMemo(() => {
+    if (dataMode !== "api") return usersAll().find((u) => u.id === userId) ?? null;
+    if (!apiUser) return null;
+    const seed = usersAll().find((candidate) => candidate.id === apiUser.id);
+    return {
+      ...(seed ?? { email: "", orgId: apiUser.orgId ?? "platform" }),
+      id: apiUser.id,
+      name: apiUser.name,
+      role: apiUser.role as Role,
+      orgId: apiUser.orgId ?? "platform",
+      patientId: apiUser.patientId ?? undefined,
+    } as User;
+  }, [apiUser, userId]);
+  const org = useMemo(() => {
+    if (!user) return null;
+    return orgById(user.orgId) ?? {
+      id: user.orgId,
+      name: "Connected organization",
+      code: user.orgId.slice(0, 8).toUpperCase(),
+      type: user.role === "SUPER_ADMIN" ? "platform" as const : "hospital" as const,
+      city: "",
+      state: "",
+      createdOn: "",
+    };
+  }, [user]);
 
-  async function signIn(email: string, password?: string) {
+  async function signIn(identifier: string, password?: string, role?: Role) {
     setError(null);
-    const normalized = email.trim().toLowerCase();
+    const normalized = identifier.trim().toLowerCase();
+    if (dataMode === "api") {
+      if (!role) {
+        setError("Choose the role you are signing in as.");
+        return false;
+      }
+      try {
+        const result = await authenticate(role, normalized);
+        if (result.status !== "authenticated") {
+          setError("This identifier is not available for that role.");
+          return false;
+        }
+        setApiUser(result.user);
+        return true;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Sign in failed.");
+        return false;
+      }
+    }
     if (dataMode === "supabase" && supabase) {
       const { data, error: e } = await supabase.auth.signInWithPassword({ email: normalized, password: password ?? "" });
       if (e || !data.user) {
@@ -87,13 +138,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   function signInAs(id: string) {
+    if (dataMode === "api") return;
     setError(null);
     setUserId(id);
     try { localStorage.setItem(SESSION_KEY, id); } catch { /* noop */ }
   }
 
-  function signOut() {
-    if (dataMode === "supabase" && supabase) void supabase.auth.signOut();
+  async function signOut() {
+    if (dataMode === "api") {
+      try { await apiSignOut(); } catch { /* Local state must still be cleared. */ }
+      setApiUser(null);
+    }
+    if (dataMode === "supabase" && supabase) await supabase.auth.signOut();
     setUserId(null);
     try { localStorage.removeItem(SESSION_KEY); } catch { /* noop */ }
   }

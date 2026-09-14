@@ -36,6 +36,10 @@ import { registerRequestId } from "./middleware/request-id.js";
 import { healthRoutes } from "./modules/health/routes.js";
 import { authRoutes } from "./modules/auth/routes.js";
 import { patientRoutes } from "./modules/patients/routes.js";
+import { careRoutes } from "./modules/care/routes.js";
+import { consentRoutes } from "./modules/consents/routes.js";
+import { accessRoutes } from "./modules/access/routes.js";
+import { auditRoutes } from "./modules/audit/routes.js";
 
 export async function buildApp() {
   const env = parseEnv();
@@ -94,6 +98,10 @@ export async function buildApp() {
         { name: "meta", description: "Service metadata and probes" },
         { name: "auth", description: "Authentication and session (Phase 3 — docs/backend/03, 06 §1)" },
         { name: "patients", description: "Patient records and external identity mapping (Phase 4 — docs/backend/04, 05, 06 §3)" },
+        { name: "care", description: "Encounters, append-only clinical records, and longitudinal timelines (Phase 5)" },
+        { name: "consents", description: "Purpose- and period-scoped patient consent workflow (Phase 6)" },
+        { name: "access", description: "Server-owned role, organization, purpose, consent, and record-type authorization (Phase 7)" },
+        { name: "audit", description: "Append-only, hash-chained records of sensitive actions (Phase 8)" },
       ],
     },
     transform: jsonSchemaTransform,
@@ -106,6 +114,10 @@ export async function buildApp() {
   await app.register(healthRoutes, { env });
   await app.register(authRoutes, { prefix: "/api/v1/auth", env });
   await app.register(patientRoutes, { prefix: "/api/v1/patients", env });
+  await app.register(careRoutes, { prefix: "/api/v1", env });
+  await app.register(consentRoutes, { prefix: "/api/v1/consents", env });
+  await app.register(accessRoutes, { prefix: "/api/v1/access", env });
+  await app.register(auditRoutes, { prefix: "/api/v1", env });
 
   return app;
 }

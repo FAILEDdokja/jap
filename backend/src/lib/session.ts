@@ -31,6 +31,7 @@ export interface SessionUser {
   role: string;
   name: string;
   orgId?: string;
+  patientId?: string;
 }
 
 export interface Session {

@@ -7,6 +7,7 @@ import { ROLE_LABEL } from "@/auth/roles";
 import { Wordmark } from "@/components/Wordmark";
 import { Button, Input, Field, Avatar, Badge } from "@/components/ui/primitives";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import type { Role } from "@/data/types";
 
 const PERSONA_ORDER = ["u-aroha", "u-farah", "u-nmc-admin", "u-amit", "u-lab", "u-pharm", "u-super"];
 
@@ -15,6 +16,7 @@ export default function Login() {
   const nav = useNavigate();
   const [email, setEmail] = useState("aroha.deshpande@nmc.example.in");
   const [password, setPassword] = useState("demo");
+  const [role, setRole] = useState<Role>("DOCTOR");
   const [busy, setBusy] = useState(false);
   const [localErr, setLocalErr] = useState<string | null>(null);
 
@@ -24,10 +26,10 @@ export default function Login() {
     e.preventDefault();
     setBusy(true);
     setLocalErr(null);
-    const ok = await signIn(email, password);
+    const ok = await signIn(email, password, mode === "api" ? role : undefined);
     setBusy(false);
     if (ok) nav("/app");
-    else setLocalErr("We couldn't sign you in. Try a demo persona on the right.");
+    else setLocalErr(mode === "api" ? "We couldn't sign you in with that role and identifier." : "We couldn't sign you in. Try a demo persona on the right.");
   }
 
   return (
@@ -75,16 +77,24 @@ export default function Login() {
           <p className="mt-1.5 text-[13px] text-zinc-500">
             {mode === "demo"
               ? "Demo environment — choose a persona below, or use any seeded email. Password is not checked."
-              : "Enter the email and password for your Supabase account."}
+              : mode === "api"
+                ? "Enter your identifier and role. Your browser receives only a secure, HttpOnly server session."
+                : "Enter the email and password for your Supabase account."}
           </p>
 
           <form onSubmit={submit} className="mt-7 space-y-4">
-            <Field label="Work email" htmlFor="email">
-              <Input id="email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            <Field label={mode === "api" ? "Identifier" : "Work email"} htmlFor="email">
+              <Input id="email" type={mode === "api" ? "text" : "email"} autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />
             </Field>
-            <Field label="Password" htmlFor="password">
-              <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-            </Field>
+            {mode === "api" ? (
+              <Field label="Role" htmlFor="role">
+                <select id="role" value={role} onChange={(e) => setRole(e.target.value as Role)} className="h-10 w-full rounded-lg border border-line bg-surface px-3 text-[13px] text-zinc-100 outline-none focus:border-brand-500">
+                  {["DOCTOR", "HOSPITAL_ADMIN", "PATIENT", "LAB", "PHARMACY", "SUPER_ADMIN"].map((item) => <option key={item} value={item}>{ROLE_LABEL[item as Role]}</option>)}
+                </select>
+              </Field>
+            ) : <Field label="Password" htmlFor="password">
+                <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+              </Field>}
             {(localErr || error) && (
               <p className="rounded-lg bg-rose-500/10 px-3 py-2 text-[12px] text-rose-300 ring-1 ring-inset ring-rose-500/25">{localErr || error}</p>
             )}
@@ -93,7 +103,7 @@ export default function Login() {
             </Button>
           </form>
 
-          <div className="my-7 flex items-center gap-3 text-[10.5px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
+          {mode === "demo" && <><div className="my-7 flex items-center gap-3 text-[10.5px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
             <span className="h-px flex-1 bg-line" /> Demo personas <span className="h-px flex-1 bg-line" />
           </div>
 
@@ -115,7 +125,7 @@ export default function Login() {
                 <Badge tone="neutral">{ROLE_LABEL[p.role]}</Badge>
               </button>
             ))}
-          </div>
+          </div></>}
         </div>
       </div>
     </div>

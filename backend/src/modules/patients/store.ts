@@ -65,9 +65,9 @@ export interface PatientRecord {
   orgId: string;
   status: PatientStatus;
   name: string;
-  gender: PatientGender;
+  gender: PatientGender | null;
   /** Calendar date `YYYY-MM-DD` (doc 05 §6) — age is derived, never stored. */
-  dob: string;
+  dob: string | null;
   bloodGroup: string | null;
   heightCm: number | null;
   weightKg: number | null;
@@ -192,8 +192,8 @@ interface SeedPatient {
   id: string;
   orgId: string;
   name: string;
-  gender: PatientGender;
-  dob: string;
+  gender?: PatientGender;
+  dob?: string;
   status?: PatientStatus;
   bloodGroup?: string;
   heightCm?: number;
@@ -270,7 +270,7 @@ const SEED_PATIENTS: SeedPatient[] = [
   // Walk-in intake with NO ABHA whatsoever — healthcare delivery must proceed
   // without one (this phase's central constraint). Provisional lifecycle.
   {
-    id: uuid(0x107), orgId: "org-nmc", name: "Vitthal Shinde (Emergency Intake)", gender: "Other", dob: "1980-01-01",
+    id: uuid(0x107), orgId: "org-nmc", name: "Vitthal Shinde (Emergency Intake)",
     status: "provisional",
     phone: "90000 00001",
   },
@@ -283,14 +283,14 @@ export function resetPatientStore(): void {
   identityKeys.clear();
   patientOrder = [];
 
-  for (const s of SEED_PATIENTS) {
+  SEED_PATIENTS.forEach((s, patientIndex) => {
     insertPatient({
       id: s.id,
       orgId: s.orgId,
       status: s.status ?? "registered",
       name: s.name,
-      gender: s.gender,
-      dob: s.dob,
+      gender: s.gender ?? null,
+      dob: s.dob ?? null,
       bloodGroup: s.bloodGroup ?? null,
       heightCm: s.heightCm ?? null,
       weightKg: s.weightKg ?? null,
@@ -306,7 +306,7 @@ export function resetPatientStore(): void {
     let isFirstNumber = true;
     (s.identities ?? []).forEach((ident, idx) => {
       insertIdentity({
-        id: uuid(0x200 + idx),
+        id: uuid(0x200 + patientIndex * 2 + idx),
         patientId: s.id,
         orgId: s.orgId,
         type: ident.type,
@@ -321,7 +321,7 @@ export function resetPatientStore(): void {
       });
       if (ident.type === "ABHA_NUMBER") isFirstNumber = false;
     });
-  }
+  });
 }
 
 

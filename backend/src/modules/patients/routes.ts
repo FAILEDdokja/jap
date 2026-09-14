@@ -33,10 +33,12 @@ import {
 import {
   CreatePatientBodySchema,
   ListPatientsQuerySchema,
+  PatientErrorResponseSchema,
   PatientListResponseSchema,
   PatientResponseSchema,
   UpdatePatientBodySchema,
 } from "./schemas.js";
+import { writeAuditEvent } from "../audit/service.js";
 
 export interface PatientRoutesOptions {
   env: Env;
@@ -72,7 +74,11 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
         description:
           "Create a patient record. ABHA is optional: declare identifiers via `identities` (stored UNVERIFIED in patient_identities) or omit them entirely. `status: \"provisional\"` creates a walk-in/emergency intake with minimal demographics.",
         body: CreatePatientBodySchema,
-        response: { 201: PatientResponseSchema },
+        response: {
+          201: PatientResponseSchema,
+          400: PatientErrorResponseSchema,
+          409: PatientErrorResponseSchema,
+        },
       },
     },
     async (request, reply) => {
@@ -97,6 +103,7 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
         { actorId: actor.id, patientId: result.value.id, status: result.value.status, identities: result.value.identities.length },
         "patients.create",
       );
+      writeAuditEvent({ actor, patientId: result.value.id, action: "CREATE_RECORD", resourceType: "PATIENT", resourceId: result.value.id, requestId: request.id });
       return reply.status(201).send({ patient: result.value });
     },
   );
@@ -135,7 +142,7 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
         description:
           "Fetch one patient record by its opaque id. Unknown ids → 404 (no existence oracle). Identities masked only.",
         params: z.object({ id: z.string().uuid() }),
-        response: { 200: PatientResponseSchema },
+        response: { 200: PatientResponseSchema, 404: PatientErrorResponseSchema },
       },
     },
     async (request, reply) => {
@@ -155,6 +162,7 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
       }
 
       request.log.info({ actorId: actor.id, patientId: patient.id }, "patients.get");
+      writeAuditEvent({ actor, patientId: patient.id, action: "VIEW_RECORD", resourceType: "PATIENT", resourceId: patient.id, requestId: request.id });
       return reply.status(200).send({ patient });
     },
   );
@@ -169,7 +177,12 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
           "Update demographics/contacts; declare an additional identifier (`addIdentity`, stored unverified); record a server-side verification outcome (`markIdentityVerified` — the ABDM adapter's hook after a successful doc 04 §6 confirm); or transition a provisional record to registered (`status: \"registered\"`).",
         params: z.object({ id: z.string().uuid() }),
         body: UpdatePatientBodySchema,
-        response: { 200: PatientResponseSchema },
+        response: {
+          200: PatientResponseSchema,
+          400: PatientErrorResponseSchema,
+          404: PatientErrorResponseSchema,
+          409: PatientErrorResponseSchema,
+        },
       },
     },
     async (request, reply) => {
@@ -201,6 +214,7 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
         { actorId: actor.id, patientId: result.value.id, state: result.value.state },
         "patients.update",
       );
+      writeAuditEvent({ actor, patientId: result.value.id, action: "UPDATE_RECORD", resourceType: "PATIENT", resourceId: result.value.id, requestId: request.id });
       return reply.status(200).send({ patient: result.value });
     },
   );

@@ -49,6 +49,8 @@ export interface DemoAccount {
   identifiers: string[];
   email?: string;
   phone?: string;
+  /** Clinical record owned by a patient account; absent for non-patient/demo-unlinked accounts. */
+  patientId?: string;
 }
 
 /**
@@ -146,6 +148,7 @@ export const DEMO_ACCOUNTS: DemoAccount[] = [
     ],
     email: "amit.kumar@abdm.example.in",
     phone: "9823045671",
+    patientId: "00000000-0000-4000-8000-000000000257",
   },
   {
     id: "u-priya",
@@ -154,6 +157,7 @@ export const DEMO_ACCOUNTS: DemoAccount[] = [
     orgId: "org-nmc",
     identifiers: ["34-5678-9123-4502", "34567891234502", "priya.patel@abdm", "priya.patel@abdm.example.in"],
     email: "priya.patel@abdm.example.in",
+    patientId: "00000000-0000-4000-8000-000000000258",
   },
   // Compatibility with legacy mock-auth.js (frontend/src/js/auth/mock-auth.js)
   {
@@ -199,7 +203,7 @@ export type AuthStatus = "authenticated" | "identifier-not-found" | "role-unavai
 // Future additive status — not returned in Phase 3 but kept in the union so
 // callers can switch on `status` without revision.
 export type AuthResult =
-  | { status: "authenticated"; user: { id: string; role: Role; name: string; orgId: string } }
+  | { status: "authenticated"; user: { id: string; role: Role; name: string; orgId: string; patientId?: string } }
   | { status: "identifier-not-found" }
   | { status: "role-unavailable" }
   | { status: "requires-credential"; requestId: string; methods: string[]; maskedContact: string };
@@ -231,10 +235,10 @@ export function authenticate(params: { role: string; identifier: string }): Auth
   // Role-scoped search — cross-role match must NOT authenticate here.
   for (const entry of candidates) {
     if (entry.normalizedAliases.has(normalized)) {
-      const { id, role: acctRole, name, orgId } = entry.account;
+      const { id, role: acctRole, name, orgId, patientId } = entry.account;
       return {
         status: "authenticated",
-        user: { id, role: acctRole as Role, name, orgId },
+        user: { id, role: acctRole as Role, name, orgId, ...(patientId ? { patientId } : {}) },
       };
     }
   }

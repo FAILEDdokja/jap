@@ -17,6 +17,7 @@ export const AuthenticatedUserSchema = z.object({
   role: z.string().min(1),
   name: z.string().min(1),
   orgId: z.string().min(1).optional(),
+  patientId: z.string().uuid().optional(),
 });
 
 export const AuthenticateResponseSchema = z.discriminatedUnion("status", [

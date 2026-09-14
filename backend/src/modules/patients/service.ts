@@ -102,7 +102,8 @@ function nowIso(): string {
 }
 
 function validDob(dob: string): boolean {
-  return !Number.isNaN(new Date(`${dob}T00:00:00Z`).getTime());
+  const date = new Date(`${dob}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === dob;
 }
 
 /**
@@ -113,8 +114,7 @@ export function createPatient(
   ctx: { orgId: string },
   input: CreatePatientBody,
 ): Result<PatientView> {
-  const status: PatientStatus =
-    input.status ?? (input.gender && input.dob ? "registered" : "provisional");
+  const status: PatientStatus = input.status ?? "registered";
 
   // A registered record requires complete demographics; provisional needs a
   // name only (emergency intake often has nothing else — ABHA least of all).
@@ -140,8 +140,10 @@ export function createPatient(
   // Uniqueness of (type, value) across ALL patients (mirrors the DB unique
   // index). Comparison is on canonical values, so formatting/case variants
   // of the same identifier conflict — doc 04 §3.
+  const declaredIdentityKeys = new Set<string>();
   for (const ident of input.identities ?? []) {
-    if (findIdentityByValue(ident.type, ident.value)) {
+    const key = `${ident.type}:${ident.value}`;
+    if (declaredIdentityKeys.has(key) || findIdentityByValue(ident.type, ident.value)) {
       return {
         ok: false,
         error: {
@@ -150,6 +152,7 @@ export function createPatient(
         },
       };
     }
+    declaredIdentityKeys.add(key);
   }
 
   const now = nowIso();
@@ -158,8 +161,8 @@ export function createPatient(
     orgId: ctx.orgId,
     status,
     name: input.name,
-    gender: input.gender ?? "Other",
-    dob: input.dob ?? "1980-01-01",
+    gender: input.gender ?? null,
+    dob: input.dob ?? null,
     bloodGroup: input.bloodGroup ?? null,
     heightCm: input.heightCm ?? null,
     weightKg: input.weightKg ?? null,

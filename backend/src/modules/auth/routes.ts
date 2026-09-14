@@ -37,6 +37,7 @@ import {
   setSessionCookie,
   clearSessionCookie,
 } from "../../lib/session.js";
+import { writeAuditEvent } from "../audit/service.js";
 
 export interface AuthRoutesOptions {
   env: Env;
@@ -70,6 +71,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
           role: result.user.role,
           name: result.user.name,
           orgId: result.user.orgId,
+          patientId: result.user.patientId,
         });
         setSessionCookie(reply, env, sessionId);
         // Audit hook (structured log, no credential): never log identifier/secret.
@@ -77,6 +79,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
           { actorId: result.user.id, role: result.user.role, status: result.status },
           "auth.authenticate success",
         );
+        writeAuditEvent({ actor: result.user, action: "LOGIN", resourceType: "SESSION", resourceId: sessionId, requestId: request.id });
         return reply.status(200).send(result);
       }
 
@@ -85,6 +88,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
         { role, status: result.status },
         "auth.authenticate non-success",
       );
+      writeAuditEvent({ action: "FAILED_LOGIN", resourceType: "AUTHENTICATION", requestId: request.id, status: "blocked" });
       return reply.status(200).send(result);
     },
   );

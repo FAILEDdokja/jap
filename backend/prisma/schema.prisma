@@ -82,6 +82,12 @@ enum EncounterSetting {
   Teleconsult
 }
 
+enum EncounterStatus {
+  in_progress
+  completed
+  cancelled
+}
+
 /// The identifiers a patient may be known by. Value is canonicalized
 /// (bare digits for ABHA number; lowercase for ABHA address) per doc 04 §3.
 enum PatientIdentityType {
@@ -99,6 +105,15 @@ enum ClinicalRecordKind {
   NOTE
   VITAL
   OBSERVATION
+  CONSULTATION
+  DIAGNOSIS
+  PRESCRIPTION
+  LAB_ORDER
+  LAB_RESULT
+  PROCEDURE
+  ADMISSION
+  DISCHARGE
+  IMMUNIZATION
 }
 
 enum DiagnosisStatus {
@@ -127,11 +142,11 @@ enum LabPriority {
 }
 
 enum ConsentStatus {
-  pending
-  approved
-  denied
-  expired
-  revoked
+  REQUESTED
+  APPROVED
+  REJECTED
+  REVOKED
+  EXPIRED
 }
 
 /// Lifecycle of the ABDM consent-manager artifact linked to a JAP consent.
@@ -363,9 +378,9 @@ model Patient {
   status PatientStatus @default(registered)
 
   name   String
-  gender Gender
+  gender Gender?
   /// Calendar date only (doc 05 §6) — age is derived, never stored.
-  dob    DateTime @db.Date
+  dob    DateTime? @db.Date
 
   bloodGroup String? @map("blood_group")
 
@@ -461,6 +476,7 @@ model Encounter {
 
   date    DateTime         @db.Date
   setting EncounterSetting
+  status  EncounterStatus  @default(in_progress)
 
   clinicianId String? @map("clinician_id") @db.Uuid
   clinician   User?    @relation(fields: [clinicianId], references: [id], onDelete: SetNull)
@@ -519,6 +535,12 @@ model ClinicalRecord {
   /// Kind-specific structured payload (jsonb), e.g.
   /// `{ "substance": "Penicillin", "reaction": "Rash", "severity": "moderate" }`.
   data Json?
+
+  /// A correction is a new clinical entry; the original remains immutable.
+  correctsId       String?         @map("corrects_id") @db.Uuid
+  corrects         ClinicalRecord? @relation("ClinicalRecordCorrection", fields: [correctsId], references: [id], onDelete: Restrict)
+  corrections      ClinicalRecord[] @relation("ClinicalRecordCorrection")
+  correctionReason String?          @map("correction_reason") @db.Text
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -735,7 +757,7 @@ model Procedure {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// A consent request/decision as the JAP consent plane models it (matches the
-/// frontend `Consent` entity: pending/approved/denied/expired/revoked, scope +
+/// consent workflow: requested/approved/rejected/revoked/expired, scope +
 /// ABDM hiTypes, expiry). The ABDM consent-manager artifact that backs it lives
 /// in `consent_records`.
 model Consent {
@@ -751,20 +773,22 @@ model Consent {
   requestingUserName String? @map("requesting_user_name")
 
   purpose String
-  /// Requested scope (data categories), e.g. ["problems", "medications"].
-  scope   String[]
+  /// Requested record types, e.g. ["DIAGNOSIS", "LAB_RESULT"].
+  recordTypes String[] @map("scope")
   /// ABDM health-information types requested (e.g. ["Prescription", "DiagnosticReport"]).
   hiTypes String[] @map("hi_types")
 
   requestedOn DateTime @map("requested_on") @db.Date
-  status      ConsentStatus @default(pending)
+  validFrom   DateTime @map("valid_from") @db.Date
+  status      ConsentStatus @default(REQUESTED)
 
   decidedOn DateTime? @map("decided_on") @db.Date
-  expiresOn DateTime? @map("expires_on") @db.Date
+  validUntil DateTime? @map("expires_on") @db.Date
   decidedById String? @map("decided_by_id") @db.Uuid
   decidedBy   User?    @relation("ConsentDecider", fields: [decidedById], references: [id], onDelete: SetNull)
 
   note String? @db.Text
+  revokedAt DateTime? @map("revoked_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -778,7 +802,7 @@ model Consent {
   @@index([requestingOrgId])
   @@index([requestingUserId])
   @@index([status])
-  @@index([expiresOn])
+  @@index([validUntil])
   @@map("consents")
 }
 
@@ -873,6 +897,10 @@ model AccessDecision {
   patientId String? @map("patient_id") @db.Uuid
   patient   Patient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
 
+  purpose         String?
+  authorizationId String? @map("authorization_id") @db.Uuid
+  requestId       String? @map("request_id")
+
   result AccessDecisionResult
   reason String
 
@@ -943,6 +971,8 @@ model AuditEvent {
   @@index([patientId])
   @@index([action])
   @@index([resourceType, resourceId])
+  @@index([authorizationId])
+  @@index([requestId])
   @@index([ts])
   @@map("audit_events")
 }

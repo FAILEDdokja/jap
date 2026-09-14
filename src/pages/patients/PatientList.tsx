@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { UserPlus, Search, Users, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/auth/AuthContext";
@@ -10,8 +10,15 @@ import { DataTable } from "@/components/DataTable";
 import { ConsentPill } from "@/components/ConsentPill";
 import { NewPatientModal } from "./NewPatientModal";
 import { ageFrom, fmtDate } from "@/lib/format";
+import { ApiError } from "@/api/client";
+import { listPatients, type ApiPatient } from "@/api/patients";
 
 export default function PatientList() {
+  const { mode } = useAuth();
+  return mode === "api" ? <ApiPatientList /> : <DemoPatientList />;
+}
+
+function DemoPatientList() {
   useStore();
   const { user } = useAuth();
   const nav = useNavigate();
@@ -95,6 +102,67 @@ export default function PatientList() {
       </div>
 
       <NewPatientModal open={showNew} onClose={() => setShowNew(false)} onCreated={(id) => nav(`/app/patients/${id}`)} />
+    </div>
+  );
+}
+
+/** API-mode list intentionally renders the server's masked patient view, not demo-only clinical fields. */
+function ApiPatientList() {
+  const { user } = useAuth();
+  const nav = useNavigate();
+  const [patients, setPatients] = useState<ApiPatient[]>([]);
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<"all" | "mine" | "external">("all");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listPatients()
+      .then((result) => { if (active) setPatients(result); })
+      .catch((e) => { if (active) setError(e instanceof ApiError ? e.message : "Unable to load patients."); });
+    return () => { active = false; };
+  }, []);
+
+  const rows = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    return patients.filter((patient) => {
+      const identity = patient.identities.map((item) => item.value).join(" ").toLowerCase();
+      if (term && ![patient.name, identity, patient.contact.phone ?? ""].some((value) => value.toLowerCase().includes(term))) return false;
+      if (filter === "mine" && patient.orgId !== user?.orgId) return false;
+      if (filter === "external" && patient.orgId === user?.orgId) return false;
+      return true;
+    });
+  }, [filter, patients, q, user?.orgId]);
+
+  if (!user) return null;
+  return (
+    <div>
+      <PageHeader title="Patients" description="Server-backed patient records. Identities are masked by the API." />
+      <Card>
+        <CardBody className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, masked identity or phone" className="pl-9" />
+          </div>
+          <div className="flex rounded-lg border border-line p-0.5 text-[13px]">
+            {(["all", "mine", "external"] as const).map((item) => <button key={item} onClick={() => setFilter(item)} className={`rounded-md px-3 py-1.5 font-medium capitalize transition-colors ${filter === item ? "bg-brand-500/15 text-brand-300 ring-1 ring-inset ring-brand-500/30" : "text-zinc-400 hover:bg-white/[0.04]"}`}>{item === "external" ? "Other" : item}</button>)}
+          </div>
+        </CardBody>
+      </Card>
+      {error && <p className="mt-4 rounded-lg bg-rose-500/10 px-3 py-2 text-[12px] text-rose-300 ring-1 ring-inset ring-rose-500/25">{error}</p>}
+      <div className="mt-4"><Card><CardBody className="p-0"><DataTable
+        rows={rows}
+        rowKey={(patient) => patient.id}
+        onRowClick={(patient) => nav(`/app/patients/${patient.id}`)}
+        empty={<EmptyState icon={<Users className="h-5 w-5" />} title="No matching patients" description="The server returned no records in this scope." />}
+        columns={[
+          { key: "name", header: "Patient", render: (patient) => <div className="flex items-center gap-3"><Avatar name={patient.name} /><div><p className="font-medium text-zinc-100">{patient.name}</p><p className="text-[12px] text-zinc-400">{patient.gender ?? "—"} · {patient.dob ? `${ageFrom(patient.dob)} yrs` : "Age unavailable"} · {patient.bloodGroup ?? "—"}</p></div></div> },
+          { key: "identity", header: "Identity", render: (patient) => <span className="tabular text-[12.5px]">{patient.identities.map((item) => <span key={`${item.type}-${item.value}`} className="block">{item.type}: {item.value}</span>) || "—"}</span> },
+          { key: "org", header: "Organization", render: (patient) => patient.orgId },
+          { key: "state", header: "State", render: (patient) => <Badge tone="neutral">{patient.state}</Badge> },
+          { key: "registered", header: "Registered", render: (patient) => fmtDate(patient.registeredOn) },
+        ]}
+      /></CardBody></Card></div>
     </div>
   );
 }

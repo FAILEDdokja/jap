@@ -22,7 +22,10 @@ export const GenderSchema = z.enum(["Male", "Female", "Other"]);
 export const DobSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "dob must be a calendar date (YYYY-MM-DD)")
-  .refine((s) => !Number.isNaN(new Date(`${s}T00:00:00Z`).getTime()), {
+  .refine((s) => {
+    const date = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === s;
+  }, {
     message: "dob must be a real calendar date",
   });
 
@@ -158,8 +161,8 @@ export const PatientViewSchema = z.object({
   /** Derived linkage state — see service.deriveState. */
   state: PatientStateSchema,
   name: z.string(),
-  gender: GenderSchema,
-  dob: z.string(),
+  gender: GenderSchema.nullable(),
+  dob: z.string().nullable(),
   bloodGroup: z.string().nullable(),
   heightCm: z.number().nullable(),
   weightKg: z.number().nullable(),
@@ -180,6 +183,15 @@ export const PatientViewSchema = z.object({
 });
 
 export const PatientResponseSchema = z.object({ patient: PatientViewSchema });
+
+/** Standard API error envelope for documented patient-route failures. */
+export const PatientErrorResponseSchema = z.object({
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    requestId: z.string(),
+  }),
+});
 
 export const PatientListResponseSchema = z.object({
   patients: z.array(PatientViewSchema),

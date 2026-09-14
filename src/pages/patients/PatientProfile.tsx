@@ -19,10 +19,19 @@ import { NewPrescriptionModal, OrderLabModal, NewTaskModal, AddNoteModal } from 
 import { fmtDate, fmtDateTime, relative, ageFrom, maskAbha } from "@/lib/format";
 import { LAB_STATUS_TONE, RX_STATUS_TONE, TASK_STATUS_TONE } from "@/lib/status";
 import { cn } from "@/lib/cn";
+import { ApiError } from "@/api/client";
+import { getPatient, type ApiPatient } from "@/api/patients";
+import { listEncounters, type ApiEncounter } from "@/api/encounters";
+import { listRecords, type ApiRecord } from "@/api/records";
 
 type Tab = "overview" | "timeline" | "encounters" | "labs" | "prescriptions" | "tasks";
 
 export default function PatientProfile() {
+  const { mode } = useAuth();
+  return mode === "api" ? <ApiPatientProfile /> : <DemoPatientProfile />;
+}
+
+function DemoPatientProfile() {
   useStore();
   const { patientId = "" } = useParams();
   const { user } = useAuth();
@@ -502,6 +511,53 @@ export default function PatientProfile() {
       <OrderLabModal open={showLab} onClose={() => setShowLab(false)} patient={patient} />
       <NewTaskModal open={showTask} onClose={() => setShowTask(false)} patient={patient} />
       <AddNoteModal open={showNote} onClose={() => setShowNote(false)} patient={patient} />
+    </div>
+  );
+}
+
+/** Minimal production profile: every displayed field comes from the authenticated backend. */
+function ApiPatientProfile() {
+  const { patientId = "" } = useParams();
+  const [patient, setPatient] = useState<ApiPatient | null>(null);
+  const [encounters, setEncounters] = useState<ApiEncounter[]>([]);
+  const [records, setRecords] = useState<ApiRecord[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([getPatient(patientId), listEncounters(patientId), listRecords(patientId)])
+      .then(([nextPatient, nextEncounters, nextRecords]) => {
+        if (!active) return;
+        setPatient(nextPatient);
+        setEncounters(nextEncounters);
+        setRecords(nextRecords);
+      })
+      .catch((e) => { if (active) setError(e instanceof ApiError ? e.message : "Unable to load this patient record."); });
+    return () => { active = false; };
+  }, [patientId]);
+
+  return (
+    <div>
+      <BackLink />
+      {error && <EmptyState icon={<Activity className="h-5 w-5" />} title="Patient unavailable" description={error} />}
+      {!error && !patient && <p className="text-[13px] text-zinc-400">Loading patient record…</p>}
+      {patient && <>
+        <PageHeader title={patient.name} description="Server-backed record. Sensitive identities remain masked." />
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card className="lg:col-span-1"><CardHeader title="Patient details" /><CardBody className="space-y-2 text-[13px] text-zinc-300">
+            <p>{patient.gender ?? "Gender unavailable"}{patient.dob ? ` · ${ageFrom(patient.dob)} years` : ""}</p>
+            <p>Blood group: {patient.bloodGroup ?? "—"}</p>
+            <p>Phone: {patient.contact.phone ?? "—"}</p>
+            <p>Identity: {patient.identities.map((identity) => `${identity.type}: ${identity.value}`).join(", ") || "—"}</p>
+          </CardBody></Card>
+          <Card className="lg:col-span-2"><CardHeader title="Clinical activity" description={`${encounters.length} encounters · ${records.length} records`} /><CardBody className="space-y-3">
+            {encounters.length === 0 && records.length === 0 ? <p className="text-[13px] text-zinc-400">No clinical activity is available in this authorized scope.</p> : <>
+              {encounters.map((encounter) => <div key={encounter.id} className="rounded-lg border border-line p-3 text-[13px]"><p className="font-medium text-zinc-100">{String(encounter.setting ?? "Encounter")} · {String(encounter.date ?? "")}</p><p className="mt-1 text-zinc-400">{String(encounter.reason ?? encounter.assessment ?? "No summary provided.")}</p></div>)}
+              {records.map((record) => <div key={record.id} className="rounded-lg border border-line p-3 text-[13px]"><p className="font-medium text-zinc-100">{record.type}{record.title ? ` · ${String(record.title)}` : ""}</p><p className="mt-1 text-zinc-400">{String(record.detail ?? record.occurredOn ?? record.createdAt)}</p></div>)}
+            </>}
+          </CardBody></Card>
+        </div>
+      </>}
     </div>
   );
 }

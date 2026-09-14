@@ -51,7 +51,7 @@ export function AppShell() {
           </div>
         ))}
       </nav>
-      <PersonaSwitcher
+      {mode !== "api" && <PersonaSwitcher
         currentId={user.id}
         currentName={user.name}
         currentRole={user.role}
@@ -61,7 +61,7 @@ export function AppShell() {
           nav("/app");
         }}
         mode={mode}
-      />
+      />}
     </>
   );
 
@@ -121,7 +121,7 @@ export function AppShell() {
               variant="ghost"
               size="sm"
               onClick={() => {
-                signOut();
+                void signOut();
                 nav("/");
               }}
               className="h-9 w-9 p-0"
