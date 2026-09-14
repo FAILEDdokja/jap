@@ -83,9 +83,21 @@ export const userById = (id: string) => db.users.find((u) => u.id === id) ?? nul
 export const patientById = (id: string) => db.patients.find((p) => p.id === id) ?? null;
 
 /* ------------------------------------------------------- consent decisions --- */
+/**
+ * The closed access vocabulary (architecture §2.5). The backend reproduces it
+ * exactly (`ACCESS_REASONS` in backend/src/services/access-service.ts) and the
+ * API returns it verbatim, so `ConsentPill` renders either side's decision
+ * without translation.
+ *
+ * `role_not_permitted` is the one reason this function never produces: it is
+ * the Layer-2 refusal (the role may not ask at all, so no consent is
+ * consulted), and only the server can make that call — a browser has no
+ * capability matrix. It is in the union because a denial has to be nameable in
+ * one set of words whichever layer produced it.
+ */
 export type AccessDecision = {
   allowed: boolean;
-  reason: "same_tenant" | "consent_active" | "self" | "platform" | "no_consent" | "consent_pending" | "consent_expired" | "consent_revoked" | "consent_denied";
+  reason: "same_tenant" | "consent_active" | "self" | "platform" | "no_consent" | "consent_pending" | "consent_expired" | "consent_revoked" | "consent_denied" | "role_not_permitted";
   consent?: Consent;
 };
 

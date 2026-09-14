@@ -16,7 +16,13 @@ export const AuthenticatedUserSchema = z.object({
   id: z.string().min(1),
   role: z.string().min(1),
   name: z.string().min(1),
+  /** Tenant the account belongs to — the basis of every tenant-scoped query. */
   orgId: z.string().min(1).optional(),
+  /**
+   * For PATIENT accounts that own a clinical record: its opaque id
+   * (`users.patient_id`, doc 03 §7). Server-side basis of the `self` access
+   * rule; absent for staff accounts and for patient accounts with no record.
+   */
   patientId: z.string().uuid().optional(),
 });
 

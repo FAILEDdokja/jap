@@ -15,7 +15,9 @@
  * randomUUID; session contents never leave the server.
  *
  * Notes:
- *  - medical records stay off-chain; sessions carry only `{ id, role, name }`
+ *  - medical records stay off-chain; a session carries only the principal's
+ *    identity facts (`{ id, role, name, orgId?, patientId? }`) — never clinical
+ *    data, never an identifier value, never a credential
  *  - the cookie is HttpOnly so the browser JS cannot read it (XSS mitigation)
  *  - `Secure` is on in production and off in dev/test (see env.SESSION_SECURE)
  *  - `SameSite=Lax` allows top-level navigation but blocks CSRF on cross-site
@@ -30,7 +32,15 @@ export interface SessionUser {
   id: string;
   role: string;
   name: string;
+  /** Tenant the account belongs to (the basis of every tenant-scoped query). */
   orgId?: string;
+  /**
+   * For PATIENT accounts: the clinical record the account owns
+   * (`users.patient_id`, doc 03 §7 — an account is not a record, but it may
+   * point at one). This is what makes the `self` access rule enforceable: a
+   * patient session reaches exactly one patient id, and the authorization layer
+   * never has to trust a client-supplied one.
+   */
   patientId?: string;
 }
 

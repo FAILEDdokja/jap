@@ -11,7 +11,7 @@ import { ConsentPill } from "@/components/ConsentPill";
 import { NewPatientModal } from "./NewPatientModal";
 import { ageFrom, fmtDate } from "@/lib/format";
 import { ApiError } from "@/api/client";
-import { listPatients, type ApiPatient } from "@/api/patients";
+import { listPatients, type ApiPatientListItem, type ApiPatientPage } from "@/api/patients";
 
 export default function PatientList() {
   const { mode } = useAuth();
@@ -106,11 +106,28 @@ function DemoPatientList() {
   );
 }
 
-/** API-mode list intentionally renders the server's masked patient view, not demo-only clinical fields. */
+/**
+ * API-mode list: the server's masked patient view, not demo-only clinical
+ * fields.
+ *
+ * Two differences from the demo list are the point of the API contract:
+ *
+ *  - identities render MASKED (`identity.masked`) — the full ABHA number never
+ *    reaches the browser, so there is nothing to reveal;
+ *  - a row whose consent is not active arrives SEALED: id, owning tenant and
+ *    the decision, with no name, no demographics and no identifiers. The demo
+ *    list shows a name there because its data is local; the API is stricter on
+ *    purpose, so a sealed row is rendered as a sealed row rather than dressed
+ *    up with fields the server deliberately withheld.
+ *
+ * `access` on every row is the server's decision (architecture §4.1), which is
+ * why the Access column is the same `ConsentPill` the demo uses: one
+ * vocabulary, one component, no re-derivation in the browser.
+ */
 function ApiPatientList() {
   const { user } = useAuth();
   const nav = useNavigate();
-  const [patients, setPatients] = useState<ApiPatient[]>([]);
+  const [page, setPage] = useState<ApiPatientPage | null>(null);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<"all" | "mine" | "external">("all");
   const [error, setError] = useState<string | null>(null);
@@ -118,26 +135,36 @@ function ApiPatientList() {
   useEffect(() => {
     let active = true;
     void listPatients()
-      .then((result) => { if (active) setPatients(result); })
+      .then((result) => { if (active) setPage(result); })
       .catch((e) => { if (active) setError(e instanceof ApiError ? e.message : "Unable to load patients."); });
     return () => { active = false; };
   }, []);
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return patients.filter((patient) => {
-      const identity = patient.identities.map((item) => item.value).join(" ").toLowerCase();
-      if (term && ![patient.name, identity, patient.contact.phone ?? ""].some((value) => value.toLowerCase().includes(term))) return false;
-      if (filter === "mine" && patient.orgId !== user?.orgId) return false;
-      if (filter === "external" && patient.orgId === user?.orgId) return false;
-      return true;
+    const inScope = (orgId: string) =>
+      filter === "all" || (filter === "mine" ? orgId === user?.orgId : orgId !== user?.orgId);
+
+    return (page?.patients ?? []).filter((row) => {
+      if (!inScope(row.orgId)) return false;
+      // A sealed row has no content to match on, so a search hides it — the
+      // same rule the server applies when `q` is present.
+      if (row.sealed) return !term;
+      if (!term) return true;
+      const identities = row.identities.map((identity) => identity.masked).join(" ").toLowerCase();
+      return [row.name, identities, row.contact.phone ?? ""].some((value) => value.toLowerCase().includes(term));
     });
-  }, [filter, patients, q, user?.orgId]);
+  }, [filter, page, q, user?.orgId]);
+
+  const sealedCount = page?.sealedCount ?? 0;
+  const description = sealedCount > 0
+    ? `Server-backed patient records. ${sealedCount} row${sealedCount === 1 ? "" : "s"} sealed: your organization has a consent request that is not active.`
+    : "Server-backed patient records. Identities are masked by the API.";
 
   if (!user) return null;
   return (
     <div>
-      <PageHeader title="Patients" description="Server-backed patient records. Identities are masked by the API." />
+      <PageHeader title="Patients" description={description} />
       <Card>
         <CardBody className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="relative flex-1">
@@ -150,17 +177,51 @@ function ApiPatientList() {
         </CardBody>
       </Card>
       {error && <p className="mt-4 rounded-lg bg-rose-500/10 px-3 py-2 text-[12px] text-rose-300 ring-1 ring-inset ring-rose-500/25">{error}</p>}
-      <div className="mt-4"><Card><CardBody className="p-0"><DataTable
+      <div className="mt-4"><Card><CardBody className="p-0"><DataTable<ApiPatientListItem>
         rows={rows}
-        rowKey={(patient) => patient.id}
-        onRowClick={(patient) => nav(`/app/patients/${patient.id}`)}
+        rowKey={(row) => row.id}
+        onRowClick={(row) => nav(`/app/patients/${row.id}`)}
         empty={<EmptyState icon={<Users className="h-5 w-5" />} title="No matching patients" description="The server returned no records in this scope." />}
         columns={[
-          { key: "name", header: "Patient", render: (patient) => <div className="flex items-center gap-3"><Avatar name={patient.name} /><div><p className="font-medium text-zinc-100">{patient.name}</p><p className="text-[12px] text-zinc-400">{patient.gender ?? "—"} · {patient.dob ? `${ageFrom(patient.dob)} yrs` : "Age unavailable"} · {patient.bloodGroup ?? "—"}</p></div></div> },
-          { key: "identity", header: "Identity", render: (patient) => <span className="tabular text-[12.5px]">{patient.identities.map((item) => <span key={`${item.type}-${item.value}`} className="block">{item.type}: {item.value}</span>) || "—"}</span> },
-          { key: "org", header: "Organization", render: (patient) => patient.orgId },
-          { key: "state", header: "State", render: (patient) => <Badge tone="neutral">{patient.state}</Badge> },
-          { key: "registered", header: "Registered", render: (patient) => fmtDate(patient.registeredOn) },
+          {
+            key: "name",
+            header: "Patient",
+            render: (row) => row.sealed ? (
+              <div className="flex items-center gap-3">
+                <Avatar name="Sealed" />
+                <div>
+                  <p className="font-medium text-zinc-400">Sealed record</p>
+                  <p className="text-[12px] text-zinc-500">Withheld until consent is active</p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <Avatar name={row.name} />
+                <div>
+                  <p className="font-medium text-zinc-100">{row.name}</p>
+                  <p className="text-[12px] text-zinc-400">{row.gender ?? "—"} · {row.dob ? `${ageFrom(row.dob)} yrs` : "Age unavailable"} · {row.bloodGroup ?? "—"}</p>
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "identity",
+            header: "Identity",
+            render: (row) => row.sealed ? <span className="text-[12px] text-zinc-600">Withheld</span> : (
+              <span className="tabular text-[12.5px]">
+                {row.identities.length === 0 ? "—" : row.identities.map((identity) => (
+                  <span key={identity.id} className="flex items-center gap-1">
+                    {identity.type === "ABHA_NUMBER" ? "ABHA" : "ABHA address"}: {identity.masked}
+                    {identity.verified && <ShieldCheck className="h-3 w-3 text-emerald-400" aria-label="Verified" />}
+                  </span>
+                ))}
+              </span>
+            ),
+          },
+          { key: "org", header: "Organization", render: (row) => row.orgId },
+          { key: "state", header: "State", render: (row) => row.sealed ? <Badge tone="warning">Sealed</Badge> : <Badge tone="neutral">{row.state}</Badge> },
+          { key: "registered", header: "Registered", render: (row) => row.sealed ? "—" : fmtDate(row.registeredOn) },
+          { key: "access", header: "Access", align: "right", render: (row) => <ConsentPill decision={row.access} /> },
         ]}
       /></CardBody></Card></div>
     </div>

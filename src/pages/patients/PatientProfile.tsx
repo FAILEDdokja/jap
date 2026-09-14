@@ -8,6 +8,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { useStore } from "@/data/useStore";
 import {
   patientBundle, patientTimeline, evaluateAccess, audit, metrics, getDb, orgById, advanceTask,
+  type AccessDecision,
 } from "@/data/store";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardHeader, CardBody, Badge, Button, EmptyState, Avatar, SampleTag } from "@/components/ui/primitives";
@@ -516,25 +517,70 @@ function DemoPatientProfile() {
 }
 
 /** Minimal production profile: every displayed field comes from the authenticated backend. */
+/**
+ * API-mode profile.
+ *
+ * The server sends the access decision with the record (architecture §4.1), so
+ * this page renders that decision instead of re-deriving one: `ConsentPill`
+ * shows why the record is open, and a 403 shows why it is not — the denial
+ * carries its reason in the same closed vocabulary.
+ *
+ * Identities render masked: the API never sends the full ABHA number or
+ * address, so there is nothing here to reveal and no reveal toggle.
+ */
 function ApiPatientProfile() {
   const { patientId = "" } = useParams();
   const [patient, setPatient] = useState<ApiPatient | null>(null);
+  const [access, setAccess] = useState<AccessDecision | null>(null);
   const [encounters, setEncounters] = useState<ApiEncounter[]>([]);
   const [records, setRecords] = useState<ApiRecord[]>([]);
+  const [denied, setDenied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    void Promise.all([getPatient(patientId), listEncounters(patientId), listRecords(patientId)])
-      .then(([nextPatient, nextEncounters, nextRecords]) => {
+    setPatient(null); setAccess(null); setEncounters([]); setRecords([]); setDenied(null); setError(null);
+
+    void getPatient(patientId)
+      .then(async (result) => {
         if (!active) return;
-        setPatient(nextPatient);
+        setPatient(result.patient);
+        setAccess(result.access);
+        // Clinical activity is a separate scope question (`modules/care`): a
+        // denial there must not hide the record the actor IS allowed to read.
+        const [nextEncounters, nextRecords] = await Promise.all([
+          listEncounters(patientId).catch(() => [] as ApiEncounter[]),
+          listRecords(patientId).catch(() => [] as ApiRecord[]),
+        ]);
+        if (!active) return;
         setEncounters(nextEncounters);
         setRecords(nextRecords);
       })
-      .catch((e) => { if (active) setError(e instanceof ApiError ? e.message : "Unable to load this patient record."); });
+      .catch((e) => {
+        if (!active) return;
+        if (e instanceof ApiError && e.status === 403) {
+          // A sealed view: the reason is the whole explanation, and no
+          // demographic data accompanies it.
+          setDenied(e.reason ?? "no_consent");
+          return;
+        }
+        setError(e instanceof ApiError ? e.message : "Unable to load this patient record.");
+      });
     return () => { active = false; };
   }, [patientId]);
+
+  if (denied) {
+    return (
+      <div>
+        <BackLink />
+        <EmptyState
+          icon={<ShieldAlert className="h-5 w-5" />}
+          title="Record sealed"
+          description={`Access denied — ${consentLabel(denied as AccessDecision["reason"])}. No clinical data was returned. Ask the patient for consent, or open the record from the facility that owns it.`}
+        />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -542,13 +588,31 @@ function ApiPatientProfile() {
       {error && <EmptyState icon={<Activity className="h-5 w-5" />} title="Patient unavailable" description={error} />}
       {!error && !patient && <p className="text-[13px] text-zinc-400">Loading patient record…</p>}
       {patient && <>
-        <PageHeader title={patient.name} description="Server-backed record. Sensitive identities remain masked." />
+        <PageHeader
+          title={patient.name}
+          description="Server-backed record. Sensitive identities remain masked."
+          actions={access && <ConsentPill decision={access} />}
+        />
         <div className="grid gap-4 lg:grid-cols-3">
           <Card className="lg:col-span-1"><CardHeader title="Patient details" /><CardBody className="space-y-2 text-[13px] text-zinc-300">
             <p>{patient.gender ?? "Gender unavailable"}{patient.dob ? ` · ${ageFrom(patient.dob)} years` : ""}</p>
             <p>Blood group: {patient.bloodGroup ?? "—"}</p>
             <p>Phone: {patient.contact.phone ?? "—"}</p>
-            <p>Identity: {patient.identities.map((identity) => `${identity.type}: ${identity.value}`).join(", ") || "—"}</p>
+            <p>Status: <Badge tone={patient.status === "provisional" ? "warning" : "positive"}>{patient.status}</Badge> <span className="text-zinc-500">· {patient.state}</span></p>
+            <div>
+              <p className="text-zinc-500">Identities</p>
+              {patient.identities.length === 0
+                ? <p className="text-zinc-400">None declared — care does not wait for an ABHA.</p>
+                : patient.identities.map((identity) => (
+                  <p key={identity.id} className="tabular flex items-center gap-1.5">
+                    <span className="text-zinc-500">{identity.type === "ABHA_NUMBER" ? "ABHA" : "ABHA address"}:</span>
+                    {identity.masked}
+                    {identity.verified
+                      ? <Badge tone="positive"><ShieldCheck className="h-3 w-3" /> Verified</Badge>
+                      : <Badge tone="neutral"><Clock className="h-3 w-3" /> Unverified</Badge>}
+                  </p>
+                ))}
+            </div>
           </CardBody></Card>
           <Card className="lg:col-span-2"><CardHeader title="Clinical activity" description={`${encounters.length} encounters · ${records.length} records`} /><CardBody className="space-y-3">
             {encounters.length === 0 && records.length === 0 ? <p className="text-[13px] text-zinc-400">No clinical activity is available in this authorized scope.</p> : <>

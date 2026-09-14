@@ -29,10 +29,10 @@ describe("Phase 6 consent APIs", () => {
   it("creates a purpose- and record-type-scoped request from the authenticated requester", async () => {
     const app = await buildApp();
     const doctor = await signIn(app, "DOCTOR", "HP-1001");
-    const patientId = await patientId(app, doctor);
+    const targetId = await patientId(app, doctor);
     const res = await app.inject({
       method: "POST", url: "/api/v1/consents", headers: { cookie: doctor },
-      payload: { patientId, purpose: "TREATMENT", recordTypes: ["DIAGNOSIS", "LAB_RESULT", "DIAGNOSIS"], validUntil: "2026-12-31" },
+      payload: { patientId: targetId, purpose: "TREATMENT", recordTypes: ["DIAGNOSIS", "LAB_RESULT", "DIAGNOSIS"], validUntil: "2026-12-31" },
     });
     expect(res.statusCode).toBe(201);
     expect(res.json().consent).toMatchObject({ status: "REQUESTED", requesterId: "u-aroha", requesterOrganizationId: "org-nmc", purpose: "TREATMENT" });
@@ -43,8 +43,8 @@ describe("Phase 6 consent APIs", () => {
   it("allows only a patient to approve, then revoke, a requested consent", async () => {
     const app = await buildApp();
     const doctor = await signIn(app, "DOCTOR", "HP-1001");
-    const patientId = await patientId(app, doctor);
-    const created = await app.inject({ method: "POST", url: "/api/v1/consents", headers: { cookie: doctor }, payload: { patientId, purpose: "TREATMENT", recordTypes: ["PRESCRIPTION"], validUntil: "2026-12-31" } });
+    const targetId = await patientId(app, doctor);
+    const created = await app.inject({ method: "POST", url: "/api/v1/consents", headers: { cookie: doctor }, payload: { patientId: targetId, purpose: "TREATMENT", recordTypes: ["PRESCRIPTION"], validUntil: "2026-12-31" } });
     const id = created.json().consent.id;
 
     const forbidden = await app.inject({ method: "POST", url: `/api/v1/consents/${id}/approve`, headers: { cookie: doctor }, payload: {} });
@@ -65,8 +65,8 @@ describe("Phase 6 consent APIs", () => {
   it("expires a consent automatically and blocks later approval", async () => {
     const app = await buildApp();
     const doctor = await signIn(app, "DOCTOR", "HP-1001");
-    const patientId = await patientId(app, doctor);
-    const created = await app.inject({ method: "POST", url: "/api/v1/consents", headers: { cookie: doctor }, payload: { patientId, purpose: "RESEARCH", recordTypes: ["OBSERVATION"], validFrom: "2020-01-01", validUntil: "2020-01-02" } });
+    const targetId = await patientId(app, doctor);
+    const created = await app.inject({ method: "POST", url: "/api/v1/consents", headers: { cookie: doctor }, payload: { patientId: targetId, purpose: "RESEARCH", recordTypes: ["OBSERVATION"], validFrom: "2020-01-01", validUntil: "2020-01-02" } });
     const patient = await signIn(app, "PATIENT", "23-4567-8912-3401");
     const approval = await app.inject({ method: "POST", url: `/api/v1/consents/${created.json().consent.id}/approve`, headers: { cookie: patient }, payload: {} });
     expect(approval.statusCode).toBe(400);

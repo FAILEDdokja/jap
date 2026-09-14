@@ -97,7 +97,7 @@ export async function buildApp() {
       tags: [
         { name: "meta", description: "Service metadata and probes" },
         { name: "auth", description: "Authentication and session (Phase 3 — docs/backend/03, 06 §1)" },
-        { name: "patients", description: "Patient records and external identity mapping (Phase 4 — docs/backend/04, 05, 06 §3)" },
+        { name: "patients", description: "Patient records and external identity mapping (Phase 4 — docs/backend/04, 05, 06 §3). Every route is behind the RBAC guard and tenant-scoped: 401 without a session, 403 `role_not_permitted` when the role lacks the capability, 403 with the AccessDecision when the record belongs to another tenant and no active consent covers it." },
         { name: "care", description: "Encounters, append-only clinical records, and longitudinal timelines (Phase 5)" },
         { name: "consents", description: "Purpose- and period-scoped patient consent workflow (Phase 6)" },
         { name: "access", description: "Server-owned role, organization, purpose, consent, and record-type authorization (Phase 7)" },
