@@ -34,6 +34,12 @@ const RawEnvSchema = z.object({
 
   /** PostgreSQL connection string (Prisma). Required for database-backed routes. */
   DATABASE_URL: z.string().min(1).default("postgresql://postgres:postgres@localhost:5432/jap"),
+
+  /** Session cookie name and lifecycle (Phase 3 — authentication). */
+  SESSION_COOKIE_NAME: z.string().min(1).default("jap_session"),
+  SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(8),
+  SESSION_SECURE: z.enum(["true", "false"]).default("false"),
+  SESSION_SECRET: z.string().min(1).default("dev-only-change-me-32-chars-minimum-for-session-secret"),
 });
 
 export interface Env {
@@ -48,6 +54,10 @@ export interface Env {
   RATE_LIMIT_WINDOW: string;
   REQUEST_ID_HEADER: string;
   DATABASE_URL: string;
+  SESSION_COOKIE_NAME: string;
+  SESSION_TTL_HOURS: number;
+  SESSION_SECURE: boolean;
+  SESSION_SECRET: string;
 }
 
 /**
@@ -80,5 +90,9 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
     RATE_LIMIT_WINDOW: raw.RATE_LIMIT_WINDOW,
     REQUEST_ID_HEADER: raw.REQUEST_ID_HEADER,
     DATABASE_URL: raw.DATABASE_URL,
+    SESSION_COOKIE_NAME: raw.SESSION_COOKIE_NAME,
+    SESSION_TTL_HOURS: raw.SESSION_TTL_HOURS,
+    SESSION_SECURE: raw.SESSION_SECURE === "true",
+    SESSION_SECRET: raw.SESSION_SECRET,
   };
 }
