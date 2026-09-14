@@ -127,7 +127,9 @@ export function registerErrorHandler(app: FastifyInstance, options: ErrorHandler
     reply.status(404).send({
       error: {
         code: "not_found",
-        message: `Route ${request.method} ${request.url} not found.`,
+        // Path only: a query string can carry a search term, which has no
+        // business being echoed back or written into a log line.
+        message: `Route ${request.method} ${request.url.split("?")[0]} not found.`,
         requestId: request.id,
       },
     } satisfies ErrorEnvelope);

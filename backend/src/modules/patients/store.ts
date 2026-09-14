@@ -17,7 +17,12 @@
  *
  * Swapping this Map-based store for Prisma changes only this module's
  * internals; the service and route layers keep calling the same functions.
+ *
+ * Demo ids come from `lib/demo-ids.ts`, the single place the auth registry (a
+ * PATIENT account → its record), this store and the consent view agree on them.
  */
+
+import { DEMO_ORG_ID, DEMO_PATIENT_ID, demoUuid } from "../../lib/demo-ids.js";
 
 export type PatientGender = "Male" | "Female" | "Other";
 
@@ -175,9 +180,7 @@ export function updateIdentityRecord(id: string, mutate: (i: PatientIdentityReco
 // Deterministic synthetic demo data mirroring src/data/seed.ts (frontend) so
 // the demo replay reaches the same patients. All values are fabricated.
 
-/** Deterministic demo UUIDs (valid v4 shape) — opaque to clients either way. */
-const uuid = (n: number): string =>
-  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const uuid = demoUuid;
 
 const SEED_T = "2026-09-10T09:30:00.000Z";
 
@@ -200,15 +203,17 @@ interface SeedPatient {
   weightKg?: number;
   phone?: string;
   address?: string;
+  email?: string;
   emergency?: { name: string; relation: string; phone: string };
   identities?: SeedIdentity[];
 }
 
 const SEED_PATIENTS: SeedPatient[] = [
   {
-    id: uuid(0x101), orgId: "org-nmc", name: "Amit Kumar", gender: "Male", dob: "1991-03-14",
-    bloodGroup: "A+", heightCm: 172, weightKg: 78,
+    id: DEMO_PATIENT_ID.amitKumar, orgId: DEMO_ORG_ID.nmc, name: "Amit Kumar", gender: "Male", dob: "1991-03-14",
+    bloodGroup: "B+", heightCm: 172, weightKg: 81,
     phone: "98230 45671", address: "House 22, Panchavati, Nashik, Maharashtra 422003",
+    email: "amit.kumar@abdm.example.in",
     emergency: { name: "Sunita Kumar", relation: "Spouse", phone: "98230 45672" },
     identities: [
       { type: "ABHA_NUMBER", value: "23456789123401", verified: true },
@@ -216,7 +221,7 @@ const SEED_PATIENTS: SeedPatient[] = [
     ],
   },
   {
-    id: uuid(0x102), orgId: "org-nmc", name: "Priya Patel", gender: "Female", dob: "1985-11-02",
+    id: DEMO_PATIENT_ID.priyaPatel, orgId: DEMO_ORG_ID.nmc, name: "Priya Patel", gender: "Female", dob: "1985-11-02",
     bloodGroup: "O+", heightCm: 160, weightKg: 58,
     phone: "98500 21436", address: "Flat 4B, Adgaon Road, Nashik, Maharashtra 422009",
     emergency: { name: "Nikhil Patel", relation: "Brother", phone: "98500 21437" },
@@ -226,7 +231,7 @@ const SEED_PATIENTS: SeedPatient[] = [
     ],
   },
   {
-    id: uuid(0x103), orgId: "org-nmc", name: "Rahul Sharma", gender: "Male", dob: "1978-07-21",
+    id: DEMO_PATIENT_ID.rahulSharma, orgId: DEMO_ORG_ID.nmc, name: "Rahul Sharma", gender: "Male", dob: "1978-07-21",
     bloodGroup: "A-", heightCm: 175, weightKg: 70,
     phone: "98909 76512", address: "Shop 3, College Road, Nashik, Maharashtra 422005",
     emergency: { name: "Meena Sharma", relation: "Spouse", phone: "98909 76513" },
@@ -236,7 +241,7 @@ const SEED_PATIENTS: SeedPatient[] = [
     ],
   },
   {
-    id: uuid(0x104), orgId: "org-sanjivani", name: "Sunita Deshmukh", gender: "Female", dob: "1963-01-09",
+    id: DEMO_PATIENT_ID.sunitaDeshmukh, orgId: DEMO_ORG_ID.sanjivani, name: "Sunita Deshmukh", gender: "Female", dob: "1963-01-09",
     bloodGroup: "AB+", heightCm: 156, weightKg: 61,
     phone: "97640 33218", address: "Lane 5, Kothrud, Pune, Maharashtra 411038",
     emergency: { name: "Arjun Deshmukh", relation: "Son", phone: "97640 33219" },
@@ -246,7 +251,7 @@ const SEED_PATIENTS: SeedPatient[] = [
     ],
   },
   {
-    id: uuid(0x105), orgId: "org-sanjivani", name: "Iqbal Ansari", gender: "Male", dob: "1968-05-30",
+    id: DEMO_PATIENT_ID.iqbalAnsari, orgId: DEMO_ORG_ID.sanjivani, name: "Iqbal Ansari", gender: "Male", dob: "1968-05-30",
     bloodGroup: "B-", heightCm: 170, weightKg: 74,
     phone: "96070 55412", address: "24 Camp Road, Pune, Maharashtra 411001",
     emergency: { name: "Rukhsana Ansari", relation: "Spouse", phone: "96070 55413" },
@@ -258,7 +263,7 @@ const SEED_PATIENTS: SeedPatient[] = [
   // Registered but ABHA *not* verified — linkage state stays `registered`
   // despite identifiers being on file. Verification is a separate fact.
   {
-    id: uuid(0x106), orgId: "org-nmc", name: "Meera Joshi", gender: "Female", dob: "1997-09-19",
+    id: DEMO_PATIENT_ID.meeraJoshi, orgId: DEMO_ORG_ID.nmc, name: "Meera Joshi", gender: "Female", dob: "1997-09-19",
     bloodGroup: "O-", heightCm: 163, weightKg: 64,
     phone: "95030 71190", address: "Plot 9, Indira Nagar, Nashik, Maharashtra 422009",
     emergency: { name: "Rohit Joshi", relation: "Spouse", phone: "95030 71191" },
@@ -270,20 +275,35 @@ const SEED_PATIENTS: SeedPatient[] = [
   // Walk-in intake with NO ABHA whatsoever — healthcare delivery must proceed
   // without one (this phase's central constraint). Provisional lifecycle.
   {
-    id: uuid(0x107), orgId: "org-nmc", name: "Vitthal Shinde (Emergency Intake)",
+    id: DEMO_PATIENT_ID.vitthalShinde, orgId: DEMO_ORG_ID.nmc, name: "Vitthal Shinde (Emergency Intake)",
     status: "provisional",
     phone: "90000 00001",
   },
 ];
 
-/** (Re)build the demo tables. Runs at import; tests call it to reset. */
+/**
+ * (Re)build the demo tables. Called once at import so the running server has a
+ * populated registry, and again by tests in `beforeEach` to start from a known
+ * state. Without the import-time call the API boots with an empty store: every
+ * list answers `total: 0` and every record read answers 404, while the test
+ * suite — which resets explicitly — stays green. That gap is why this line is
+ * here rather than left to a caller.
+ */
 export function resetPatientStore(): void {
   patients.clear();
   identities.clear();
   identityKeys.clear();
   patientOrder = [];
 
-  SEED_PATIENTS.forEach((s, patientIndex) => {
+  // Identity ids are minted from ONE running counter across all patients.
+  // (A per-patient counter produced colliding ids, and because `identities` is
+  // keyed by id the later rows silently overwrote the earlier ones — every
+  // seeded patient but the last appeared to have no identifiers at all. A
+  // per-patient *stride* fixes the seeded data but collides again the moment a
+  // patient carries more identities than the stride allows.)
+  let identitySeq = 0x200;
+
+  for (const s of SEED_PATIENTS) {
     insertPatient({
       id: s.id,
       orgId: s.orgId,
@@ -294,7 +314,7 @@ export function resetPatientStore(): void {
       bloodGroup: s.bloodGroup ?? null,
       heightCm: s.heightCm ?? null,
       weightKg: s.weightKg ?? null,
-      contact: { phone: s.phone ?? null, address: s.address ?? null, email: null },
+      contact: { phone: s.phone ?? null, address: s.address ?? null, email: s.email ?? null },
       emergencyContact: s.emergency
         ? { name: s.emergency.name, relation: s.emergency.relation, phone: s.emergency.phone }
         : { name: null, relation: null, phone: null },
@@ -304,9 +324,9 @@ export function resetPatientStore(): void {
     });
 
     let isFirstNumber = true;
-    (s.identities ?? []).forEach((ident, idx) => {
+    (s.identities ?? []).forEach((ident) => {
       insertIdentity({
-        id: uuid(0x200 + patientIndex * 2 + idx),
+        id: uuid(identitySeq++),
         patientId: s.id,
         orgId: s.orgId,
         type: ident.type,
@@ -321,7 +341,8 @@ export function resetPatientStore(): void {
       });
       if (ident.type === "ABHA_NUMBER") isFirstNumber = false;
     });
-  });
+  }
 }
 
-
+// Populate on import — see resetPatientStore()'s note.
+resetPatientStore();

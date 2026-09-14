@@ -10,6 +10,15 @@ import { prisma } from "./lib/prisma.js";
 async function main(): Promise<void> {
   const app = await buildApp();
 
+  // The client is null when `prisma generate` has not run (it needs network
+  // access for the engine binaries). Every route served today is DB-free, so
+  // the API boots and answers normally — say so once, loudly, and carry on.
+  if (!prisma) {
+    app.log.warn(
+      "Prisma client unavailable — running without the data layer. Run `npm run prisma:generate` (see src/lib/prisma.ts).",
+    );
+  }
+
   try {
     await app.listen({ port: app.env.PORT, host: app.env.HOST });
   } catch (err) {
@@ -23,7 +32,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     app.log.info({ signal }, "shutting down gracefully");
     try {
-      await prisma.$disconnect();
+      await prisma?.$disconnect();
       await app.close();
       process.exit(0);
     } catch (err) {

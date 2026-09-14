@@ -12,6 +12,8 @@ const MAP: Record<AccessDecision["reason"], { label: string; tone: Parameters<ty
   consent_revoked: { label: "Access revoked", tone: "critical", icon: ShieldX },
   consent_denied: { label: "Access denied", tone: "critical", icon: ShieldX },
   no_consent: { label: "No access", tone: "muted", icon: ShieldQuestion },
+  // Layer 2: the role may not ask at all, so no consent was consulted.
+  role_not_permitted: { label: "Role not permitted", tone: "critical", icon: ShieldX },
 };
 
 export function ConsentPill({ decision }: { decision: AccessDecision }) {

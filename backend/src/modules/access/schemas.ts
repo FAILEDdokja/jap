@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AccessReasonSchema } from "../../services/access-schemas.js";
 import { ClinicalRecordTypeSchema } from "../care/schemas.js";
 
 export const EvaluateAccessBodySchema = z.object({
@@ -10,11 +11,10 @@ export const EvaluateAccessBodySchema = z.object({
 export const AccessDecisionResponseSchema = z.object({
   decision: z.object({
     allowed: z.boolean(),
-    reason: z.enum([
-      "self", "consent_active", "patient_not_found", "role_not_permitted", "no_consent",
-      "consent_requested", "consent_rejected", "consent_revoked", "consent_expired",
-      "consent_not_yet_valid", "purpose_not_allowed", "record_type_not_allowed",
-    ]),
+    /** The canonical §2.5 vocabulary, shared with the patient-registry decision. */
+    reason: AccessReasonSchema,
+    /** Which constraint failed when the reason alone is not specific enough. */
+    detail: z.string().nullable(),
     consentId: z.string().nullable(),
     decidedAt: z.string(),
   }),

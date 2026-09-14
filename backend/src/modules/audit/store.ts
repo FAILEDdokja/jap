@@ -15,6 +15,16 @@ export interface AuditEvent {
   authorizationId: string | null;
   requestId: string | null;
   status: AuditStatus;
+  /**
+   * Why the decision was what it was. For a denial: the `AccessDecision` reason
+   * (`no_consent`, `consent_pending`, `cross_tenant_write`, …),
+   * `role_not_permitted` for a role/capability denial, `unauthenticated` for a
+   * missing or revoked session, or a module-level refusal code
+   * (`identity_conflict`, `invalid_transition`). Null on plain successes.
+   */
+  reason: string | null;
+  /** Capability checked, when the decision was a role/capability one. */
+  capability: string | null;
   prevEventId: string | null;
   hash: string;
   timestamp: string;

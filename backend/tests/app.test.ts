@@ -8,6 +8,7 @@
  */
 import { z } from "zod";
 import { buildApp, type App } from "../src/app.js";
+import { REDACTED, redactUrl } from "../src/config/logger.js";
 import { describe, expect, it } from "vitest";
 
 describe("GET /health", () => {
@@ -178,6 +179,94 @@ describe("OpenAPI documentation", () => {
     const res = await app.inject({ method: "GET", url: "/docs/" });
     // Swagger UI may serve 200 or a redirect to the canonical path.
     expect([200, 302]).toContain(res.statusCode);
+    await app.close();
+  });
+});
+
+describe("Authentication boundary contract", () => {
+  it("declares the statuses it actually returns (400 on authenticate, 401 on session/me)", async () => {
+    const app = await buildApp();
+    const spec = (await app.inject({ method: "GET", url: "/docs/json" })).json();
+    const statuses = (path: string, op: string) =>
+      Object.keys(spec.paths[path][op].responses).sort();
+
+    // App outcomes are always 200 with a `status` union; only body validation is 400.
+    expect(statuses("/api/v1/auth/authenticate", "post")).toEqual(["200", "400"]);
+    expect(statuses("/api/v1/auth/session", "get")).toEqual(["200", "401"]);
+    expect(statuses("/api/v1/auth/me", "get")).toEqual(["200", "401"]);
+    await app.close();
+  });
+
+  it("returns the declared 401 envelope from /session when unauthenticated", async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/auth/session" });
+    expect(res.statusCode).toBe(401);
+    const body = res.json();
+    // Declaring the schema makes Fastify serialize through it — assert nothing
+    // the caller relies on was stripped.
+    expect(body.error).toMatchObject({
+      code: "unauthenticated",
+      message: expect.any(String),
+      requestId: expect.any(String),
+    });
+    await app.close();
+  });
+});
+
+describe("Request-line PHI redaction", () => {
+  // Logging is disabled under NODE_ENV=test, so the serializer cannot be
+  // observed through an injected request — these pin the function it uses.
+  it("masks person-identifying query values and keeps operational ones", () => {
+    expect(redactUrl("/api/v1/patients?q=iqbal")).toBe(`/api/v1/patients?q=${REDACTED}`);
+    expect(redactUrl("/api/v1/patients?limit=5&offset=0")).toBe("/api/v1/patients?limit=5&offset=0");
+    expect(redactUrl("/api/v1/patients?q=amit&state=registered")).toBe(
+      `/api/v1/patients?q=${REDACTED}&state=registered`,
+    );
+    expect(redactUrl("/api/v1/patients?status=provisional&orgId=org-nmc")).toBe(
+      "/api/v1/patients?status=provisional&orgId=org-nmc",
+    );
+    expect(redactUrl("/health")).toBe("/health");
+    expect(redactUrl("/api/v1/patients?")).toBe("/api/v1/patients?");
+    // Key matching is case-insensitive; the caller's casing is preserved.
+    expect(redactUrl("/api/v1/patients?Q=Amit%20Kumar")).toBe(`/api/v1/patients?Q=${REDACTED}`);
+    expect(redactUrl("/api/v1/patients?identifier=23456789123401")).toBe(
+      `/api/v1/patients?identifier=${REDACTED}`,
+    );
+  });
+
+  it("masks a parameter nobody listed (the allowlist fails closed)", () => {
+    // The obvious design — a list of sensitive keys — leaks the first
+    // person-identifying parameter a future endpoint adds.
+    expect(redactUrl("/api/v1/patients?patientName=Amit&limit=5")).toBe(
+      `/api/v1/patients?patientName=${REDACTED}&limit=5`,
+    );
+    expect(redactUrl("/api/v1/patients?dob=1991-03-14")).toBe(`/api/v1/patients?dob=${REDACTED}`);
+    expect(redactUrl("/api/v1/patients?newThing")).toBe(`/api/v1/patients?newThing=${REDACTED}`);
+    // A malformed escape must not become a reason to log the value.
+    expect(redactUrl("/api/v1/patients?q=%E0%A4%A")).toBe(`/api/v1/patients?q=${REDACTED}`);
+  });
+
+  it("leaves no search term or identifier value behind", () => {
+    const secrets = ["iqbal", "Amit Kumar", "Amit+Kumar", "23456789123401", "amit.kumar@abdm"];
+    const urls = [
+      "/api/v1/patients?q=iqbal",
+      "/api/v1/patients?q=Amit+Kumar&limit=10",
+      "/api/v1/patients?search=amit.kumar%40abdm",
+      "/api/v1/patients?abhaNumber=23456789123401&state=abha_linked",
+    ];
+    for (const url of urls) {
+      const out = redactUrl(url);
+      for (const secret of secrets) {
+        expect(out, `${url} → ${out}`).not.toContain(secret);
+      }
+    }
+  });
+
+  it("does not echo the query string back in a 404", async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: "GET", url: "/api/v1/nope?q=Amit+Kumar" });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.message).toBe("Route GET /api/v1/nope not found.");
     await app.close();
   });
 });

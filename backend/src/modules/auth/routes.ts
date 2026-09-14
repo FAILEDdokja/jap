@@ -12,6 +12,11 @@
  * mapping HTTP codes. Only transport failures (validation) use 4xx via the
  * centralized error envelope.
  *
+ * Every status these routes can return is declared in their `response` map
+ * (`middleware/error-schemas.ts`), so the OpenAPI document shows the real
+ * failure contract of the authentication boundary rather than only the happy
+ * path — the same rule the patient routes follow.
+ *
  * Session is an HttpOnly, SameSite=Lax cookie (`jap_session`) whose value is
  * an opaque UUID. The authority is the in-memory map in src/lib/session.ts —
  * the cookie is just a bearer reference. Every authenticated call can
@@ -29,6 +34,10 @@ import {
   AuthenticateResponseSchema,
   SessionResponseSchema,
 } from "./schemas.js";
+import {
+  BadRequestResponseSchema,
+  UnauthorizedResponseSchema,
+} from "../../middleware/error-schemas.js";
 import {
   createSession,
   deleteSession,
@@ -55,8 +64,11 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
         description:
           "Authenticate an identifier within a role. Returns a discriminated `status` union (always 200) per docs/backend/03 §3 and 06 §1. On success a session cookie is set.",
         body: AuthenticateBodySchema,
+        // 400 is the only non-200 this route can produce, and it comes from body
+        // validation — an app-level outcome is always 200 with a `status` union.
         response: {
           200: AuthenticateResponseSchema,
+          400: BadRequestResponseSchema,
         },
       },
     },
@@ -71,6 +83,8 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
           role: result.user.role,
           name: result.user.name,
           orgId: result.user.orgId,
+          // Carried into the session so the authorization layer can enforce the
+          // PATIENT `self` rule without trusting anything client-supplied.
           patientId: result.user.patientId,
         });
         setSessionCookie(reply, env, sessionId);
@@ -126,6 +140,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
         description: "Return the current session user if the `jap_session` cookie is valid, otherwise 401.",
         response: {
           200: SessionResponseSchema,
+          401: UnauthorizedResponseSchema,
         },
       },
     },
@@ -141,6 +156,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
         description: "Alias for GET /session — returns the current session user.",
         response: {
           200: SessionResponseSchema,
+          401: UnauthorizedResponseSchema,
         },
       },
     },

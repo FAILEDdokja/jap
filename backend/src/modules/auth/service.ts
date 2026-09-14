@@ -23,6 +23,8 @@
  * normalized lookup + cross-role semantics stay identical.
  */
 
+import { DEMO_PATIENT_ID } from "../../lib/demo-ids.js";
+
 export type Role =
   | "PATIENT"
   | "DOCTOR"
@@ -49,7 +51,13 @@ export interface DemoAccount {
   identifiers: string[];
   email?: string;
   phone?: string;
-  /** Clinical record owned by a patient account; absent for non-patient/demo-unlinked accounts. */
+  /**
+   * For PATIENT accounts: the clinical record the account owns
+   * (`users.patient_id`, doc 03 §7). An account is NOT a record — but a patient
+   * account points at one, and that pointer is what makes the `self` access rule
+   * enforceable server-side (access-service rule 2). A patient account with no
+   * record is legitimate: the legacy mock's login-only ABHA account has none.
+   */
   patientId?: string;
 }
 
@@ -148,7 +156,9 @@ export const DEMO_ACCOUNTS: DemoAccount[] = [
     ],
     email: "amit.kumar@abdm.example.in",
     phone: "9823045671",
-    patientId: "00000000-0000-4000-8000-000000000257",
+    // `src/data/seed.ts` u-amit → p-01; the patient store holds the same record
+    // under its opaque id (lib/demo-ids.ts is the single source for both).
+    patientId: DEMO_PATIENT_ID.amitKumar,
   },
   {
     id: "u-priya",
@@ -157,9 +167,12 @@ export const DEMO_ACCOUNTS: DemoAccount[] = [
     orgId: "org-nmc",
     identifiers: ["34-5678-9123-4502", "34567891234502", "priya.patel@abdm", "priya.patel@abdm.example.in"],
     email: "priya.patel@abdm.example.in",
-    patientId: "00000000-0000-4000-8000-000000000258",
+    patientId: DEMO_PATIENT_ID.priyaPatel,
   },
-  // Compatibility with legacy mock-auth.js (frontend/src/js/auth/mock-auth.js)
+  // Compatibility with legacy mock-auth.js (frontend/src/js/auth/mock-auth.js).
+  // Deliberately has NO patientId: this login identity has no clinical record
+  // (patient-identity-implementation-log §9 — "a login identity and a clinical
+  // record are different concerns"), so it correctly reaches no record at all.
   {
     id: "abha-12345678912345",
     role: "PATIENT",
@@ -203,7 +216,10 @@ export type AuthStatus = "authenticated" | "identifier-not-found" | "role-unavai
 // Future additive status — not returned in Phase 3 but kept in the union so
 // callers can switch on `status` without revision.
 export type AuthResult =
-  | { status: "authenticated"; user: { id: string; role: Role; name: string; orgId: string; patientId?: string } }
+  | {
+      status: "authenticated";
+      user: { id: string; role: Role; name: string; orgId: string; patientId?: string };
+    }
   | { status: "identifier-not-found" }
   | { status: "role-unavailable" }
   | { status: "requires-credential"; requestId: string; methods: string[]; maskedContact: string };
@@ -238,6 +254,8 @@ export function authenticate(params: { role: string; identifier: string }): Auth
       const { id, role: acctRole, name, orgId, patientId } = entry.account;
       return {
         status: "authenticated",
+        // `patientId` is carried only when the account owns a record (doc 03
+        // §7): it is the server-side basis of the PATIENT `self` access rule.
         user: { id, role: acctRole as Role, name, orgId, ...(patientId ? { patientId } : {}) },
       };
     }

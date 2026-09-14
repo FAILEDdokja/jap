@@ -5,6 +5,7 @@ const AuditEventSchema = z.object({
   actorRole: z.string().nullable(), organizationId: z.string().nullable(), patientId: z.string().nullable(),
   action: z.string(), resourceType: z.string(), resourceId: z.string().nullable(), purpose: z.string().nullable(),
   authorizationId: z.string().nullable(), requestId: z.string().nullable(), status: z.enum(["success", "blocked"]),
+  reason: z.string().nullable(), capability: z.string().nullable(),
   prevEventId: z.string().nullable(), hash: z.string(), timestamp: z.string(),
 });
 

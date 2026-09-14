@@ -15,6 +15,7 @@
  */
 
 import { z } from "zod";
+import { AccessDecisionSchema } from "../../services/access-schemas.js";
 
 export const GenderSchema = z.enum(["Male", "Female", "Other"]);
 
@@ -129,8 +130,13 @@ export const UpdatePatientBodySchema = z.object({
 // ── GET /api/v1/patients ─────────────────────────────────────────────────────
 
 export const ListPatientsQuerySchema = z.object({
-  /** Case-insensitive substring match on name. */
+  /**
+   * Case-insensitive substring match on name. Applied INSIDE the actor's
+   * visibility scope — a search can never widen it, and sealed rows are dropped
+   * when any content filter is present (service.listPatientsForActor).
+   */
   q: z.string().max(200).optional(),
+  /** Restrict to one tenant, intersected with (never a substitute for) scope. */
   orgId: z.string().min(1).optional(),
   /** Derived linkage state filter. */
   state: z.enum(["provisional", "registered", "abha_linked"]).optional(),
@@ -140,6 +146,11 @@ export const ListPatientsQuerySchema = z.object({
 });
 
 // ── Responses ────────────────────────────────────────────────────────────────
+//
+// Every response carries the access decision alongside the record
+// (architecture §4.1: `AccessDecision` is part of the API contract, so
+// `ConsentPill.tsx` renders unchanged and the profile gate is driven by the
+// server rather than re-derived in the browser).
 
 export const PatientIdentityViewSchema = z.object({
   id: z.string(),
@@ -156,9 +167,10 @@ export const PatientStateSchema = z.enum(["provisional", "registered", "abha_lin
 
 export const PatientViewSchema = z.object({
   id: z.string(),
+  /** Owning tenant. Reads are scoped by it; writes are restricted to it. */
   orgId: z.string(),
   status: z.enum(["provisional", "registered"]),
-  /** Derived linkage state — see service.deriveState. */
+  /** Derived linkage state — see service.deriveState. Never an access rule. */
   state: PatientStateSchema,
   name: z.string(),
   gender: GenderSchema.nullable(),
@@ -182,7 +194,37 @@ export const PatientViewSchema = z.object({
   updatedAt: z.string(),
 });
 
-export const PatientResponseSchema = z.object({ patient: PatientViewSchema });
+/** A row the actor may read: the full record plus the decision that allowed it. */
+export const AccessiblePatientSchema = PatientViewSchema.extend({
+  sealed: z.literal(false),
+  access: AccessDecisionSchema,
+});
+
+/**
+ * A row the actor may know EXISTS but not read: their tenant has a consent
+ * artifact for it that is not active (pending / expired / revoked / denied).
+ *
+ * Id + owning tenant + the decision, and nothing else. No name, no dob, no
+ * contact, no identifiers — a sealed row must not become a demographic side
+ * channel. (The frontend's demo list shows a name here; the API is stricter on
+ * purpose, and doc 08 §4 flags patient-search scoping as privacy-critical.)
+ */
+export const SealedPatientSchema = z.object({
+  sealed: z.literal(true),
+  id: z.string(),
+  orgId: z.string(),
+  access: AccessDecisionSchema,
+});
+
+export const PatientListItemSchema = z.discriminatedUnion("sealed", [
+  AccessiblePatientSchema,
+  SealedPatientSchema,
+]);
+
+export const PatientResponseSchema = z.object({
+  patient: PatientViewSchema,
+  access: AccessDecisionSchema,
+});
 
 /** Standard API error envelope for documented patient-route failures. */
 export const PatientErrorResponseSchema = z.object({
@@ -194,10 +236,18 @@ export const PatientErrorResponseSchema = z.object({
 });
 
 export const PatientListResponseSchema = z.object({
-  patients: z.array(PatientViewSchema),
+  patients: z.array(PatientListItemSchema),
+  /** Rows matching the actor's scope AND the filters (the pagination total). */
   total: z.number().int(),
+  /** How many of them are sealed stubs. */
+  sealedCount: z.number().int(),
   limit: z.number().int(),
   offset: z.number().int(),
+  /** How the list was scoped, so a caller can explain an empty result. */
+  scope: z.object({
+    kind: z.enum(["platform", "tenant", "self", "none"]),
+    orgId: z.string().nullable(),
+  }),
 });
 
 export type CreatePatientBody = z.infer<typeof CreatePatientBodySchema>;
@@ -205,4 +255,5 @@ export type UpdatePatientBody = z.infer<typeof UpdatePatientBodySchema>;
 export type ListPatientsQuery = z.infer<typeof ListPatientsQuerySchema>;
 export type PatientView = z.infer<typeof PatientViewSchema>;
 export type PatientIdentityInput = z.infer<typeof PatientIdentityInputSchema>;
-
+export type PatientListItem = z.infer<typeof PatientListItemSchema>;
+export type SealedPatient = z.infer<typeof SealedPatientSchema>;
