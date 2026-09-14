@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+  <title>Jan Arogya Portal - Government of India</title>
+
+  <!-- Tailwind CDN with plugins - per approved design -->
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+
+  <!-- Fonts per approved design -->
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet" />
+
+  <!-- Custom styles (ticker + dropdown + login overlay) -->
+  <link href="./src/styles/custom.css" rel="stylesheet" />
+
+  <!-- Tailwind theme config - matches approved landing page -->
+  <script src="./src/styles/tailwind-config.js"></script>
+</head>
+<body class="bg-surface text-on-surface font-body-md antialiased min-h-screen flex flex-col">
+  <!--
+    Jan Arogya Portal - public landing page plus role-specific login.
+
+    Structure (reusable custom elements):
+    - <government-header> : Official GoI header
+    - <top-navbar> : Primary nav with ecosystem role login dropdown
+    - <announcement-ticker> : Latest updates ticker
+    - <main-section> : Centered official identity section
+    - <site-footer> : Government footer
+
+    Login views added for this milestone:
+    - <login-modal> : role-specific authentication panel, shown over the public
+      page (#/login/<role>)
+    - <role-dashboard> : signed-in destination placeholder for non-doctor roles
+    - <doctor-workspace> : doctor clinical shell (#/dashboard/doctor[/<section>])
+
+    Doctor clinical views (mounted inside <doctor-workspace>, not in the body):
+    - <patient-intake>  : New Patient workflow - ABHA, then one-time password
+    - <patient-profile> : the identified patient's clinical summary
+
+    #public-view groups the two public-only sections so routing can swap the
+    landing content for the dashboard while the header, navigation and footer
+    stay in place. No backend, database or ABDM integration exists yet;
+    authentication is a mock service (src/js/auth/) and so is patient identity
+    (src/js/abdm/).
+  -->
+
+  <government-header></government-header>
+  <top-navbar></top-navbar>
+
+  <div id="public-view">
+    <announcement-ticker></announcement-ticker>
+    <main-section></main-section>
+  </div>
+
+  <role-dashboard hidden></role-dashboard>
+  <doctor-workspace hidden></doctor-workspace>
+
+  <site-footer></site-footer>
+
+  <login-modal></login-modal>
+
+  <!-- App entry - registers components and wires routing/session (ES modules, no build required) -->
+  <script type="module" src="./src/js/app.js"></script>
+</body>
+</html>

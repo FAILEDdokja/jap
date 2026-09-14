@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --canvas: #0B0C0D;
+}
+
+html, body, #root { height: 100%; }
+html { background: var(--canvas); }
+
+/*
+ * Light mode.
+ *
+ * The product is designed dark-first, so light mode is produced with a single
+ * reversible filter on the document root rather than a second token set:
+ * invert(1) flips every lightness value (near-black canvas -> near-white,
+ * near-white text -> near-black); hue-rotate(180deg) cancels the hue shift
+ * invert() introduces, so the teal/amber/rose/emerald accents land back close
+ * to their original hues instead of drifting to their complements. Toggled by
+ * src/components/ThemeToggle.tsx, persisted via src/lib/theme.ts.
+ */
+html[data-theme="light"] {
+  filter: invert(1) hue-rotate(180deg);
+}
+html[data-theme="light"] body {
+  background: var(--canvas);
+}
+
+body {
+  @apply bg-canvas text-zinc-100 font-sans antialiased;
+  font-feature-settings: "cv05", "cv08", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: rgb(20 184 166 / 0.28); }
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  @apply outline-none ring-2 ring-brand-500/60 ring-offset-2 ring-offset-canvas rounded;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+.scroll-slim { scrollbar-width: thin; scrollbar-color: #3A3B3E transparent; }
+.scroll-slim::-webkit-scrollbar { height: 8px; width: 8px; }
+.scroll-slim::-webkit-scrollbar-thumb { background: #33343700; border-radius: 9999px; }
+.scroll-slim:hover::-webkit-scrollbar-thumb { background: #333437; }
+.scroll-slim::-webkit-scrollbar-track { background: transparent; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #26272a; border-radius: 9999px; border: 2px solid var(--canvas); }
+::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.animate-fadein { animation: fadein .14s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}

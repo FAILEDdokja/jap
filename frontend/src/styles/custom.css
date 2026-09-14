@@ -1,0 +1,59 @@
+/* Custom styles for Jan Arogya Portal landing page */
+
+/* Announcement ticker animation */
+.ticker-wrap {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.ticker {
+  display: inline-block;
+  animation: ticker 20s linear infinite;
+}
+
+@keyframes ticker {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+/* Login dropdown - show on hover and focus.
+   The menu is also opened by click (see top-navbar.js), because hover alone is
+   not available on a touch screen and this menu is the entry point to login. */
+.dropdown-menu {
+  display: none;
+}
+
+.dropdown-container:hover .dropdown-menu,
+.dropdown-container:focus-within .dropdown-menu,
+.dropdown-container.is-open .dropdown-menu {
+  display: block;
+}
+
+/*
+  Role login overlay
+  The public page stays mounted behind the panel with a subtle dim and blur, so
+  the portal identity remains legible as context without competing with the
+  form. The panel itself is never blurred. Where backdrop-filter is unavailable
+  the dim alone carries the separation.
+*/
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 16px;
+  background: rgba(11, 28, 48, 0.45);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .login-overlay {
+    backdrop-filter: blur(3px);
+  }
+}
+
+/* Stop the page behind the overlay from scrolling while the form has focus. */
+.login-overlay-open {
+  overflow: hidden;
+}
