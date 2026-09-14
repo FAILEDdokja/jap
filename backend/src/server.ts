@@ -5,6 +5,7 @@
  * requests drain on SIGINT/SIGTERM before the process exits.
  */
 import { buildApp } from "./app.js";
+import { prisma } from "./lib/prisma.js";
 
 async function main(): Promise<void> {
   const app = await buildApp();
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     app.log.info({ signal }, "shutting down gracefully");
     try {
+      await prisma.$disconnect();
       await app.close();
       process.exit(0);
     } catch (err) {

@@ -1,0 +1,1182 @@
+// Jan Arogya Portal — Prisma schema (Phase 2: database).
+//
+// Design constraints carried through every model (docs/architecture.md §1,
+// docs/backend/05 §1, docs/backend/09):
+//
+//   1. Every table uses an opaque UUIDv4 primary key — never auto-increment
+//      integers, never ABHA-derived, never sequential/externally guessable
+//      (doc 05 §2, §6). `@default(uuid())` maps to PostgreSQL
+//      `gen_random_uuid()`.
+//
+//   2. Multi-tenancy: every tenant-sensitive object carries an
+//      `organization_id` (the tenant that owns/registered it). Cross-tenant
+//      reads are gated by the consent/access plane, never by the schema alone,
+//      but the FK exists so tenant scoping is enforceable at query time.
+//
+//   3. Clinical dates (dob, encounter date, ordered/reported dates) are
+//      `DATE` (calendar dates, no timezone). Audit/session/timestamps are
+//      `TIMESTAMPTZ` UTC (doc 09 §1).
+//
+//   4. The audit trail is append-only and hash-chained; medical records stay
+//      off-chain — only audit-envelope digests are anchored (doc 09 §2,
+//      architecture §4.7).
+//
+//   5. Deletion policy (soft delete is preferred for clinical data; the FK
+//      `onDelete` rules below encode the worst case):
+//        - references to Organization  → `Restrict` (a tenant is never
+//          silently deleted while referenced).
+//        - child rows that exist only inside a patient's chart → `Cascade`.
+//        - audit/transaction/access rows that must outlive the patient row →
+//          `SetNull` (denormalized name snapshots keep them readable).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Enumerations
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Roles (docs/backend/07 §1). Insertion order mirrors the frontend registry.
+enum Role {
+  PATIENT
+  DOCTOR
+  HOSPITAL_ADMIN
+  LAB
+  PHARMACY
+  SUPER_ADMIN
+}
+
+enum OrgType {
+  hospital
+  lab
+  pharmacy
+  platform
+}
+
+enum Gender {
+  Male
+  Female
+  Other
+}
+
+enum EncounterSetting {
+  OPD
+  IPD
+  Emergency
+  Teleconsult
+}
+
+/// The identifiers a patient may be known by. Value is canonicalized
+/// (bare digits for ABHA number; lowercase for ABHA address) per doc 04 §3.
+enum PatientIdentityType {
+  ABHA_NUMBER
+  ABHA_ADDRESS
+}
+
+/// Kinds of longitudinal clinical data held on a patient's chart. The
+/// frontend's reconciled lists (allergies / chronic conditions / current
+/// medications / notes) map here; `diagnoses` carries the coded problem list.
+enum ClinicalRecordKind {
+  ALLERGY
+  CONDITION
+  MEDICATION
+  NOTE
+  VITAL
+  OBSERVATION
+}
+
+enum DiagnosisStatus {
+  active
+  resolved
+}
+
+enum PrescriptionStatus {
+  issued
+  partially_dispensed
+  dispensed
+  cancelled
+}
+
+enum LabOrderStatus {
+  ordered
+  collected
+  in_progress
+  resulted
+  cancelled
+}
+
+enum LabPriority {
+  routine
+  urgent
+}
+
+enum ConsentStatus {
+  pending
+  approved
+  denied
+  expired
+  revoked
+}
+
+/// Lifecycle of the ABDM consent-manager artifact linked to a JAP consent.
+enum ConsentRecordStatus {
+  requested
+  granted
+  revoked
+  expired
+  errored
+}
+
+enum AccessRequestStatus {
+  pending
+  granted
+  denied
+  expired
+}
+
+/// Outcome of an access-control decision (mirrors `evaluateAccess` allowed/denied).
+enum AccessDecisionResult {
+  granted
+  denied
+}
+
+enum AuditStatus {
+  success
+  blocked
+}
+
+/// ABDM transaction families handled through the adapter (doc 04 §5).
+enum AbdmTransactionType {
+  AUTH_INIT
+  AUTH_CONFIRM
+  ABHA_VERIFY
+  CONSENT_REQUEST
+  CONSENT_FETCH
+  HI_REQUEST
+  HI_FETCH
+}
+
+enum AbdmTransactionStatus {
+  initiated
+  otp_required
+  verified
+  completed
+  failed
+  expired
+  cancelled
+}
+
+/// Which ABDM registry an identity references (doc 07 §3).
+enum AbdmIdentityType {
+  ABHA
+  HPID
+  FACILITY_ID
+}
+
+enum AbdmIdentityStatus {
+  active
+  inactive
+}
+
+/// ABDM "care context" — the reference a HIP uses to link a patient's record.
+enum CareContextStatus {
+  active
+  linked
+  unlinked
+}
+
+enum NotificationKind {
+  consent
+  lab
+  task
+  prescription
+  system
+}
+
+enum CareTaskType {
+  lab_order
+  referral
+  follow_up
+  medication_review
+  general
+}
+
+enum CareTaskPriority {
+  low
+  normal
+  high
+}
+
+enum CareTaskStatus {
+  pending
+  in_progress
+  completed
+  cancelled
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Identity, tenancy and membership
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A tenant: hospital, lab, pharmacy, or the platform itself.
+model Organization {
+  id   String  @id @default(uuid()) @db.Uuid
+  name String
+  type OrgType
+  /// Short tenant code (e.g. "NASHIK-CITY"), unique for stable lookups.
+  code String  @unique
+  city String?
+  state String?
+
+  /// ABDM Health Facility Registry (HFR) facility id — reference only, never a
+  /// shadow copy of registry data (doc 07 §3).
+  facilityId String? @unique @map("facility_id")
+
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users       User[]
+  members     OrganizationMember[]
+  patients    Patient[]
+  patientIdentities PatientIdentity[]
+  encounters  Encounter[]
+  records     ClinicalRecord[]
+  diagnoses   Diagnosis[]
+  prescriptions Prescription[]
+  labOrdersOrdered LabOrder[] @relation("LabOrderOrderingOrg")
+  labOrdersPerformed LabOrder[] @relation("LabOrderPerformingOrg")
+  labResults  LabResult[]
+  procedures  Procedure[]
+  consents    Consent[]
+  consentRecords ConsentRecord[]
+  accessRequests AccessRequest[]
+  accessDecisions AccessDecision[]
+  auditEvents AuditEvent[]
+  transactions AbdmTransaction[]
+  identities  AbdmIdentity[]
+  careContexts CareContext[]
+  notifications Notification[]
+  /// Notifications scoped to this tenant as the *pertaining* org (vs. audience).
+  scopedNotifications Notification[] @relation("NotificationOrg")
+  /// Coordination tasks this tenant created, and those assigned to it.
+  careTasksCreated  CareTask[] @relation("CareTaskCreatorOrg")
+  careTasksAssigned CareTask[] @relation("CareTaskAssigneeOrg")
+
+  @@map("organizations")
+}
+
+/// An account (authentication). Distinct from the clinical record it may act
+/// on (doc 03 §7): accounts hold credentials/roles, records hold clinical data.
+model User {
+  id    String @id @default(uuid()) @db.Uuid
+  name  String
+  email String @unique
+  role  Role
+
+  /// Primary tenant. Nullable only for platform-level principals (SUPER_ADMIN).
+  orgId String? @map("org_id") @db.Uuid
+  org   Organization? @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  title String?
+  phone String?
+
+  /// For PATIENT users: the clinical record they own (doc 03 §7).
+  patientId String? @unique @map("patient_id") @db.Uuid
+  patient   Patient?  @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships      OrganizationMember[]
+  encounters       Encounter[]
+  recordsAuthored  ClinicalRecord[] @relation("ClinicalRecordAuthor")
+  diagnoses        Diagnosis[]
+  prescriptions    Prescription[]
+  labOrders        LabOrder[]
+  procedures       Procedure[]
+  consentsRequested Consent[] @relation("ConsentRequester")
+  consentsDecided  Consent[] @relation("ConsentDecider")
+  accessRequests   AccessRequest[]
+  accessDecisions  AccessDecision[]
+  auditEvents      AuditEvent[]
+  transactions     AbdmTransaction[]
+  identities       AbdmIdentity[]
+  notifications    Notification[]
+  careTasks        CareTask[]
+
+  @@index([orgId])
+  @@index([role])
+  @@map("users")
+}
+
+/// Many-to-many: a user's membership in a tenant, with an org-scoped role.
+/// A clinician may act for several facilities; this is the junction that
+/// records it (docs/backend/07 §2, facility/staff model).
+model OrganizationMember {
+  id     String @id @default(uuid()) @db.Uuid
+  orgId  String @map("org_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  /// Role the user holds *within this organization* (may differ from account role).
+  role   Role? 
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Patients and identity
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A patient's demographic record, owned by the tenant that registered it.
+/// No credentials, no ABHA inline — identities live in `patient_identities`.
+model Patient {
+  id    String @id @default(uuid()) @db.Uuid
+  /// Owning tenant (registered the base demographic record).
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  name   String
+  gender Gender
+  /// Calendar date only (doc 05 §6) — age is derived, never stored.
+  dob    DateTime @db.Date
+
+  bloodGroup String? @map("blood_group")
+
+  // Latest-known vitals (no history table until a vitals design exists, doc 05 §2).
+  heightCm Decimal? @map("height_cm") @db.Decimal(5, 2)
+  weightKg Decimal? @map("weight_kg") @db.Decimal(5, 2)
+
+  contactPhone   String? @map("contact_phone")
+  contactAddress String? @map("contact_address")
+  contactEmail   String? @map("contact_email")
+
+  emergencyContactName     String? @map("emergency_contact_name")
+  emergencyContactRelation String? @map("emergency_contact_relation")
+  emergencyContactPhone    String? @map("emergency_contact_phone")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users          User[]
+  identities     PatientIdentity[]
+  encounters     Encounter[]
+  records        ClinicalRecord[]
+  diagnoses      Diagnosis[]
+  prescriptions  Prescription[]
+  labOrders      LabOrder[]
+  labResults     LabResult[]
+  procedures     Procedure[]
+  consents       Consent[]
+  consentRecords ConsentRecord[]
+  accessRequests AccessRequest[]
+  accessDecisions AccessDecision[]
+  auditEvents    AuditEvent[]
+  transactions   AbdmTransaction[]
+  identitiesAbdm AbdmIdentity[] @relation("AbdmIdentityPatient")
+  careContexts   CareContext[]
+  notifications  Notification[]
+  careTasks      CareTask[]
+
+  @@index([orgId])
+  @@index([name])
+  @@index([dob])
+  @@map("patients")
+}
+
+/// A patient's identifying number/address (ABHA number, ABHA address) with its
+/// verification state. Multiple identifiers per patient; one may be primary.
+/// Values are canonicalized (doc 04 §3): bare digits for numbers, lowercase for
+/// addresses; matching ignores case/spaces/dashes at comparison time.
+model PatientIdentity {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// Tenant under which this identity was registered/verified.
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  type  PatientIdentityType
+  /// Canonical value (bare digits / lowercase address). Not logged in full.
+  value String
+  /// Masked display form, e.g. "ABHA •••• 3401" (doc 04 §3).
+  masked String?
+
+  verified   Boolean   @default(false)
+  verifiedAt DateTime? @map("verified_at")
+  primary    Boolean   @default(false)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([type, value])
+  @@index([patientId])
+  @@index([orgId])
+  @@map("patient_identities")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Clinical data
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A care episode. Attribution (`clinicianId`) is carried even though today's
+/// frontend does not yet read it (doc 05 §4, doc 08 §3).
+model Encounter {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// Facility/tenant where the encounter happened.
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  facilityName String? @map("facility_name")
+
+  date    DateTime         @db.Date
+  setting EncounterSetting
+
+  clinicianId String? @map("clinician_id") @db.Uuid
+  clinician   User?    @relation(fields: [clinicianId], references: [id], onDelete: SetNull)
+  /// Denormalized snapshot so history stays readable after account removal.
+  clinicianName String? @map("clinician_name")
+
+  reason      String?
+  assessment  String?
+  disposition String?
+  notes       String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  records       ClinicalRecord[]
+  diagnoses     Diagnosis[]
+  prescriptions Prescription[]
+  procedures    Procedure[]
+
+  @@index([patientId, date])
+  @@index([orgId])
+  @@index([clinicianId])
+  @@map("encounters")
+}
+
+/// A longitudinal clinical entry on a patient's chart: allergies, chronic
+/// conditions, current medications, notes, vitals and other observations.
+/// The frontend keeps these as distinct reconciled lists (doc 05 §2); `kind`
+/// discriminates them and `data` (jsonb) holds the kind-specific shape
+/// (dosage/frequency for MEDICATION, substance/reaction for ALLERGY, …).
+/// The `allergies: []` vs unknown distinction is preserved: an empty row set
+/// means "recorded none", a missing record kind means "never asked".
+model ClinicalRecord {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  encounterId String?   @map("encounter_id") @db.Uuid
+  encounter   Encounter? @relation(fields: [encounterId], references: [id], onDelete: SetNull)
+
+  kind  ClinicalRecordKind
+  title String?
+  /// Free-text body (reaction text, note body, instruction).
+  detail String? @db.Text
+
+  onsetDate DateTime? @map("onset_date") @db.Date
+
+  recordedById String? @map("recorded_by_id") @db.Uuid
+  recordedBy   User?    @relation("ClinicalRecordAuthor", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  active Boolean @default(true)
+
+  /// Kind-specific structured payload (jsonb), e.g.
+  /// `{ "substance": "Penicillin", "reaction": "Rash", "severity": "moderate" }`.
+  data Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([patientId, kind])
+  @@index([orgId])
+  @@index([encounterId])
+  @@map("clinical_records")
+}
+
+/// Coded problem list (distinct from the reconciled `chronicConditions` list,
+/// which lives in `clinical_records` as CONDITION entries).
+model Diagnosis {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  encounterId String?   @map("encounter_id") @db.Uuid
+  encounter   Encounter? @relation(fields: [encounterId], references: [id], onDelete: SetNull)
+
+  label String
+  /// Standard code (e.g. ICD-10/SNOMED) — optional until a coded screen needs it.
+  code  String?
+  date  DateTime @db.Date
+  status DiagnosisStatus @default(active)
+
+  clinicianId String? @map("clinician_id") @db.Uuid
+  clinician   User?    @relation(fields: [clinicianId], references: [id], onDelete: SetNull)
+  clinicianName String? @map("clinician_name")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([patientId])
+  @@index([orgId])
+  @@index([encounterId])
+  @@map("diagnoses")
+}
+
+/// A medication order (e-prescription) issued within a care context.
+model Prescription {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// Prescribing tenant.
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  encounterId String?   @map("encounter_id") @db.Uuid
+  encounter   Encounter? @relation(fields: [encounterId], references: [id], onDelete: SetNull)
+
+  issuedOn DateTime @map("issued_on") @db.Date
+
+  prescriberId String? @map("prescriber_id") @db.Uuid
+  prescriber   User?    @relation(fields: [prescriberId], references: [id], onDelete: SetNull)
+  prescriberName String? @map("prescriber_name")
+
+  status PrescriptionStatus @default(issued)
+  notes  String? @db.Text
+
+  // Dispensing snapshot (set by the fulfilling pharmacy).
+  dispensedByOrgId String? @map("dispensed_by_org_id") @db.Uuid
+  dispensedByName  String? @map("dispensed_by_name")
+  dispensedOn      DateTime? @map("dispensed_on") @db.Date
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  items PrescriptionItem[]
+
+  @@index([patientId])
+  @@index([orgId])
+  @@index([encounterId])
+  @@index([prescriberId])
+  @@index([status])
+  @@map("prescriptions")
+}
+
+/// A single medication line on a prescription.
+model PrescriptionItem {
+  id             String @id @default(uuid()) @db.Uuid
+  prescriptionId String @map("prescription_id") @db.Uuid
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  name         String
+  dosage       String
+  frequency    String
+  duration     String
+  instructions String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([prescriptionId])
+  @@map("prescription_items")
+}
+
+/// A laboratory order from an ordering tenant to a performing (lab) tenant.
+model LabOrder {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  orderedByOrgId String @map("ordered_by_org_id") @db.Uuid
+  orderedByOrg   Organization @relation("LabOrderOrderingOrg", fields: [orderedByOrgId], references: [id], onDelete: Restrict)
+  orderedByName  String? @map("ordered_by_name")
+
+  performingOrgId String @map("performing_org_id") @db.Uuid
+  performingOrg   Organization @relation("LabOrderPerformingOrg", fields: [performingOrgId], references: [id], onDelete: Restrict)
+
+  orderedById String? @map("ordered_by_id") @db.Uuid
+  orderedBy   User?    @relation(fields: [orderedById], references: [id], onDelete: SetNull)
+
+  test     String
+  panel    String?
+  priority LabPriority @default(routine)
+
+  orderedOn DateTime @map("ordered_on") @db.Date
+  status    LabOrderStatus @default(ordered)
+
+  collectedOn DateTime? @map("collected_on") @db.Date
+  resultedOn  DateTime? @map("resulted_on") @db.Date
+
+  // Denormalized latest-result summary for list rendering (source of truth is
+  // `lab_results`; these are convenience copies, not authoritative).
+  resultSummary  String? @map("result_summary")
+  resultValue    String? @map("result_value")
+  unit           String?
+  referenceRange String? @map("reference_range")
+  abnormal       Boolean?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  results LabResult[]
+
+  @@index([patientId])
+  @@index([orderedByOrgId])
+  @@index([performingOrgId])
+  @@index([status])
+  @@index([orderedOn])
+  @@map("lab_orders")
+}
+
+/// A structured laboratory result, attached to an order (and possibly to a
+/// panel member). The `value` is free text (doc 05 §4); `numericValue` is the
+/// optional machine-readable form for future analytics.
+model LabResult {
+  id         String @id @default(uuid()) @db.Uuid
+  labOrderId String @map("lab_order_id") @db.Uuid
+  labOrder   LabOrder @relation(fields: [labOrderId], references: [id], onDelete: Cascade)
+
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// Performing (reporting) tenant.
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  test    String
+  value   String  @db.Text
+  unit    String?
+  referenceRange String? @map("reference_range")
+  abnormal Boolean?
+  /// Date the result is reported against (the "as of" marker, doc 05 §5b).
+  asOf    DateTime @map("as_of") @db.Date
+
+  numericValue Decimal? @map("numeric_value") @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([labOrderId])
+  @@index([patientId])
+  @@index([orgId])
+  @@index([asOf])
+  @@map("lab_results")
+}
+
+/// A clinical procedure (surgical or diagnostic) performed on a patient.
+model Procedure {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  encounterId String?   @map("encounter_id") @db.Uuid
+  encounter   Encounter? @relation(fields: [encounterId], references: [id], onDelete: SetNull)
+
+  name        String
+  code        String?
+  performedOn DateTime @map("performed_on") @db.Date
+  note        String? @db.Text
+
+  clinicianId String? @map("clinician_id") @db.Uuid
+  clinician   User?    @relation(fields: [clinicianId], references: [id], onDelete: SetNull)
+  clinicianName String? @map("clinician_name")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([patientId])
+  @@index([orgId])
+  @@index([encounterId])
+  @@map("procedures")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Consent and access
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A consent request/decision as the JAP consent plane models it (matches the
+/// frontend `Consent` entity: pending/approved/denied/expired/revoked, scope +
+/// ABDM hiTypes, expiry). The ABDM consent-manager artifact that backs it lives
+/// in `consent_records`.
+model Consent {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  requestingOrgId String @map("requesting_org_id") @db.Uuid
+  requestingOrg   Organization @relation(fields: [requestingOrgId], references: [id], onDelete: Restrict)
+
+  requestingUserId String @map("requesting_user_id") @db.Uuid
+  requestingUser   User @relation("ConsentRequester", fields: [requestingUserId], references: [id], onDelete: Restrict)
+  requestingUserName String? @map("requesting_user_name")
+
+  purpose String
+  /// Requested scope (data categories), e.g. ["problems", "medications"].
+  scope   String[]
+  /// ABDM health-information types requested (e.g. ["Prescription", "DiagnosticReport"]).
+  hiTypes String[] @map("hi_types")
+
+  requestedOn DateTime @map("requested_on") @db.Date
+  status      ConsentStatus @default(pending)
+
+  decidedOn DateTime? @map("decided_on") @db.Date
+  expiresOn DateTime? @map("expires_on") @db.Date
+  decidedById String? @map("decided_by_id") @db.Uuid
+  decidedBy   User?    @relation("ConsentDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  note String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  consentRecords ConsentRecord[]
+  accessRequests AccessRequest[]
+  accessDecisions AccessDecision[]
+
+  // `evaluateAccess` looks up the newest active consent for (patient, requesting org).
+  @@index([patientId, requestingOrgId, status])
+  @@index([requestingOrgId])
+  @@index([requestingUserId])
+  @@index([status])
+  @@index([expiresOn])
+  @@map("consents")
+}
+
+/// The ABDM consent-manager artifact (HIE-CM) that backs a JAP consent —
+/// references and lifecycle state only, never a shadow copy of ABDM data
+/// (doc 07 §3, doc 04 §7).
+model ConsentRecord {
+  id        String @id @default(uuid()) @db.Uuid
+  consentId String @map("consent_id") @db.Uuid
+  consent   Consent @relation(fields: [consentId], references: [id], onDelete: Cascade)
+
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  /// ABDM consent artifact id (returned by the consent manager).
+  abdmConsentId String? @unique @map("abdm_consent_id")
+  status        ConsentRecordStatus @default(requested)
+
+  /// Granted/expiry as recorded in the ABDM artifact (authoritative for the
+  /// artifact; JAP `consents.expiresOn` drives access decisions).
+  validFrom DateTime? @map("valid_from")
+  validTo   DateTime? @map("valid_to")
+
+  /// ABDM transaction that produced this artifact.
+  abdmTransactionId String? @map("abdm_transaction_id") @db.Uuid
+  abdmTransaction   AbdmTransaction? @relation(fields: [abdmTransactionId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([consentId])
+  @@index([patientId])
+  @@index([orgId])
+  @@map("consent_records")
+}
+
+/// A formal request to access a patient's clinical context (the cross-tenant
+/// access gate). A consent may be created to satisfy it; the decision trail is
+/// in `access_decisions`.
+model AccessRequest {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  requestingUserId String @map("requesting_user_id") @db.Uuid
+  requestingUser   User @relation(fields: [requestingUserId], references: [id], onDelete: Restrict)
+
+  requestingOrgId String @map("requesting_org_id") @db.Uuid
+  requestingOrg   Organization @relation(fields: [requestingOrgId], references: [id], onDelete: Restrict)
+
+  /// Consent that satisfies this request, once approved.
+  consentId String? @map("consent_id") @db.Uuid
+  consent   Consent? @relation(fields: [consentId], references: [id], onDelete: SetNull)
+
+  purpose String
+  hiTypes String[] @map("hi_types")
+  status  AccessRequestStatus @default(pending)
+
+  requestedOn DateTime @map("requested_on")
+  decidedOn   DateTime? @map("decided_on")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  decisions AccessDecision[]
+
+  @@index([patientId])
+  @@index([requestingUserId])
+  @@index([requestingOrgId])
+  @@index([status])
+  @@index([consentId])
+  @@map("access_requests")
+}
+
+/// The outcome of an access-control decision — the result of the access gate
+/// (`evaluateAccess`) resolving an access request or an access attempt. The
+/// `reason` carries the coded rationale (same_tenant / consent_active /
+/// consent_pending / consent_expired / consent_revoked / consent_denied /
+/// no_consent / platform / self), mirroring the frontend decision vocabulary.
+model AccessDecision {
+  id              String @id @default(uuid()) @db.Uuid
+  accessRequestId String @map("access_request_id") @db.Uuid
+  accessRequest   AccessRequest @relation(fields: [accessRequestId], references: [id], onDelete: Cascade)
+
+  /// Tenant the decision was evaluated *for* (the requesting org).
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  patientId String? @map("patient_id") @db.Uuid
+  patient   Patient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  result AccessDecisionResult
+  reason String
+
+  decidedById String? @map("decided_by_id") @db.Uuid
+  decidedBy   User?    @relation(fields: [decidedById], references: [id], onDelete: SetNull)
+
+  consentId String? @map("consent_id") @db.Uuid
+  consent   Consent? @relation(fields: [consentId], references: [id], onDelete: SetNull)
+
+  decidedAt DateTime @default(now()) @map("decided_at")
+
+  @@index([accessRequestId])
+  @@index([orgId])
+  @@index([patientId])
+  @@index([decidedById])
+  @@index([consentId])
+  @@map("access_decisions")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Audit and integrity
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Append-only audit event (doc 09 §2). Every security- or clinically-relevant
+/// action writes one row. Rows are hash-chained (`prevEventId` + `hash`) so
+/// the trail is tamper-evident; only digests of audit envelopes are anchored
+/// on-chain via `audit_proofs`. No PHI, ABHA or OTP in `detail`/resource refs.
+model AuditEvent {
+  id       String @id @default(uuid()) @db.Uuid
+  /// Monotonic sequence for total order of the hash chain (bigserial).
+  sequence BigInt @unique @default(autoincrement())
+
+  /// Actor snapshot (denormalized so history survives account changes).
+  actorId   String? @map("actor_id") @db.Uuid
+  actor     User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String? @map("actor_name")
+  actorRole Role?   @map("actor_role")
+
+  orgId String? @map("org_id") @db.Uuid
+  org   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  orgName String? @map("org_name")
+
+  action       String
+  resourceType String @map("resource_type")
+  resourceId   String? @map("resource_id")
+
+  patientId String? @map("patient_id") @db.Uuid
+  patient   Patient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  status AuditStatus
+  detail String? @db.Text
+
+  /// Hash-chain links.
+  prevEventId String? @unique @map("prev_event_id") @db.Uuid
+  prevEvent   AuditEvent? @relation("AuditChain", fields: [prevEventId], references: [id], onDelete: Restrict)
+  next        AuditEvent? @relation("AuditChain")
+  /// SHA-256 digest of this event's envelope (opaque refs only — no PHI).
+  hash        String
+
+  ts DateTime @default(now()) @map("ts") @db.Timestamptz(6)
+
+  /// An event can be the first or last leaf of an anchoring proof range.
+  proofsFirst AuditProof[] @relation("ProofFirst")
+  proofsLast  AuditProof[] @relation("ProofLast")
+
+  @@index([actorId])
+  @@index([orgId])
+  @@index([patientId])
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@index([ts])
+  @@map("audit_events")
+}
+
+/// A blockchain/merkle anchoring proof for a contiguous range of audit events.
+/// The merkle root of the range's event hashes is what goes on-chain; the row
+/// records the anchor (tx reference) and verification state. Medical records
+/// stay off-chain — only the root digest is anchored (architecture §4.7).
+model AuditProof {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Inclusive range of the chain this proof covers.
+  firstEventId String @map("first_event_id") @db.Uuid
+  firstEvent   AuditEvent @relation("ProofFirst", fields: [firstEventId], references: [id], onDelete: Restrict)
+  lastEventId  String @map("last_event_id") @db.Uuid
+  lastEvent    AuditEvent @relation("ProofLast", fields: [lastEventId], references: [id], onDelete: Restrict)
+
+  /// Merkle root of the covered event hashes.
+  rootHash String @map("root_hash")
+
+  /// Anchor details (chain-agnostic, architecture §8.1).
+  chain        String?
+  txHash       String? @map("tx_hash")
+  blockNumber  BigInt? @map("block_number")
+
+  anchoredAt DateTime? @map("anchored_at") @db.Timestamptz(6)
+  verifiedAt DateTime? @map("verified_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([firstEventId])
+  @@index([lastEventId])
+  @@index([rootHash])
+  @@index([anchoredAt])
+  @@map("audit_proofs")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// ABDM integration
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A server-side ABDM transaction (identification/OTP, consent, HI exchange).
+/// Owned by the adapter (doc 04 §5); the `requestId` is unguessable and
+/// single-use. Full identifiers are stored only here (server-side), never
+/// returned pre-verification and never logged (doc 04 §3, §6).
+model AbdmTransaction {
+  id        String @id @default(uuid()) @db.Uuid
+  /// JAP-issued, unguessable, single-use request id returned to the client.
+  requestId String @unique @map("request_id")
+  /// ABDM-issued transaction id (`txnId`), once the upstream call is made.
+  abdmTxnId String? @unique @map("abdm_txn_id")
+
+  type   AbdmTransactionType
+  status AbdmTransactionStatus @default(initiated)
+
+  /// The identifier being resolved/verified (canonical form).
+  identifierRef String? @map("identifier_ref")
+  /// Masked display form (e.g. "ABHA •••• 3401") — the only form returned pre-verification.
+  maskedIdentifier String? @map("masked_identifier")
+
+  /// OTP credential is never stored in cleartext; at most a hash for mock mode.
+  otpHash String? @map("otp_hash")
+  attempts Int @default(0)
+  resendCount Int @default(0) @map("resend_count")
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+
+  /// Bound to the requesting principal so a verification opened by one user
+  /// cannot be confirmed by another (doc 04 §6).
+  userId String? @map("user_id") @db.Uuid
+  user   User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  orgId String? @map("org_id") @db.Uuid
+  org   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  patientId String? @map("patient_id") @db.Uuid
+  patient   Patient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  /// Opaque payloads for traceability — never secrets, never full ABHA/OTP.
+  requestPayload  Json? @map("request_payload")
+  responsePayload Json? @map("response_payload")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  consentRecords ConsentRecord[]
+
+  @@index([userId])
+  @@index([orgId])
+  @@index([patientId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("abdm_transactions")
+}
+
+/// A reference into an ABDM registry (ABHA / HPR HPID / HFR facility id) with
+/// its verification outcome — references only, never a shadow copy of registry
+/// data (doc 07 §3).
+model AbdmIdentity {
+  id String @id @default(uuid()) @db.Uuid
+
+  type  AbdmIdentityType
+  /// Canonical value (bare digits / lowercase).
+  value String
+
+  /// Which JAP entity this identity anchors (at most one applies).
+  patientId String? @map("patient_id") @db.Uuid
+  patient   Patient? @relation("AbdmIdentityPatient", fields: [patientId], references: [id], onDelete: SetNull)
+
+  userId String? @map("user_id") @db.Uuid
+  user   User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  orgId String? @map("org_id") @db.Uuid
+  org   Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  status AbdmIdentityStatus @default(active)
+  verified   Boolean   @default(false)
+  verifiedAt DateTime? @map("verified_at") @db.Timestamptz(6)
+  /// Registry the verification ran against (e.g. "abdm-sandbox", "hpr").
+  sourceRegistry String? @map("source_registry")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([type, value])
+  @@index([patientId])
+  @@index([userId])
+  @@index([orgId])
+  @@map("abdm_identities")
+}
+
+/// An ABDM care context — the reference a HIP uses to address a specific
+/// patient record (patient reference + care-context reference + HI type) for
+/// discovery and HI exchange.
+model CareContext {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// The HIP (facility tenant) that owns the referenced record.
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  /// Care-context reference, unique within the HIP.
+  referenceNumber String @map("reference_number")
+  /// HFR facility id of the HIP (redundant with org.facilityId for ABDM calls).
+  hipId String? @map("hip_id")
+
+  /// Health-information type this context addresses (e.g. "Prescription").
+  hiType String? @map("hi_type")
+
+  status    CareContextStatus @default(active)
+  linkedAt  DateTime? @map("linked_at") @db.Timestamptz(6)
+  unlinkedAt DateTime? @map("unlinked_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([orgId, referenceNumber])
+  @@index([patientId])
+  @@index([orgId])
+  @@map("care_contexts")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Notifications
+// ────────────────────────────────────────────────────────────────────────────
+
+/// An in-app notification, scoped to a user, an org, or a role audience.
+model Notification {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Audience — at least one of these is set (mirrors the frontend audience
+  /// shape: userId / orgId / role).
+  audienceUserId String? @map("audience_user_id") @db.Uuid
+  audienceUser   User?    @relation(fields: [audienceUserId], references: [id], onDelete: Cascade)
+
+  audienceOrgId String? @map("audience_org_id") @db.Uuid
+  audienceOrg   Organization? @relation(fields: [audienceOrgId], references: [id], onDelete: Cascade)
+
+  audienceRole Role? @map("audience_role")
+
+  /// Tenant the notification pertains to (for scoping the feed).
+  orgId String? @map("org_id") @db.Uuid
+  org   Organization? @relation("NotificationOrg", fields: [orgId], references: [id], onDelete: SetNull)
+
+  patientId String? @map("patient_id") @db.Uuid
+  patient   Patient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  title String
+  body  String @db.Text
+  kind  NotificationKind
+
+  read      Boolean  @default(false)
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  href      String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([audienceUserId, read])
+  @@index([audienceOrgId])
+  @@index([audienceRole])
+  @@index([orgId])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+/// A cross-organization coordination task (frontend `CareTask`: lab follow-up,
+/// referral, medication review, …). Created by one tenant, assigned to another
+/// tenant/role for action.
+model CareTask {
+  id        String @id @default(uuid()) @db.Uuid
+  patientId String @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// Creating tenant.
+  orgId String @map("org_id") @db.Uuid
+  org   Organization @relation("CareTaskCreatorOrg", fields: [orgId], references: [id], onDelete: Restrict)
+
+  title    String
+  detail   String @db.Text
+  type     CareTaskType
+  priority CareTaskPriority @default(normal)
+
+  /// Tenant (and role) the task is assigned to.
+  assigneeOrgId String @map("assignee_org_id") @db.Uuid
+  assigneeOrg   Organization @relation("CareTaskAssigneeOrg", fields: [assigneeOrgId], references: [id], onDelete: Restrict)
+  assigneeRole  Role @map("assignee_role")
+
+  createdById   String? @map("created_by_id") @db.Uuid
+  createdBy     User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdByName String? @map("created_by_name")
+
+  status CareTaskStatus @default(pending)
+
+  createdOn   DateTime @map("created_on") @db.Date
+  dueOn       DateTime? @map("due_on") @db.Date
+  completedOn DateTime? @map("completed_on") @db.Date
+
+  /// Soft reference to a related order (lab order, prescription, …).
+  linkedOrderId String? @map("linked_order_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([patientId])
+  @@index([orgId])
+  @@index([assigneeOrgId])
+  @@index([status])
+  @@index([dueOn])
+  @@map("care_tasks")
+}
