@@ -1,11 +1,11 @@
 # Jan Arogya Portal — Backend
 
 Node.js + TypeScript REST API for the Jan Arogya Portal.
-**Phase 2: database** — PostgreSQL + Prisma schema (24 tables: tenancy,
-patients, clinical records, coordination, consent/access, audit-with-proofs,
-ABDM integration, notifications) on top of the Phase 1 foundation (health probe,
-configuration, structured logging, request IDs, centralized errors, CORS,
-security headers, rate limiting, Zod validation, OpenAPI).
+**Phase 3: authentication** — role-scoped alias resolution (HPID / username /
+mobile; ABHA number / address), case/space/dash-insensitive matching,
+cross-role rejection, discriminated session contract, and HttpOnly
+SameSite=Lax cookie sessions — on top of the Phase 1 foundation and the
+Phase 2 PostgreSQL + Prisma data model (24 tables).
 
 See [`docs/architecture.md`](../docs/architecture.md) for the full architecture
 and migration plan.
@@ -13,7 +13,8 @@ and migration plan.
 ## Stack
 
 Fastify · Zod · OpenAPI (`@fastify/swagger` + Swagger UI) · pino logging ·
-PostgreSQL · Prisma. Auth, consent and ABDM **services** land in later phases.
+PostgreSQL · Prisma · in-memory cookie sessions (Phase 3, pluggable to
+Redis/Postgres next). Consent and ABDM **services** land in later phases.
 
 ## Run it
 
@@ -24,6 +25,7 @@ npm run dev               # starts on http://localhost:4000
 ```
 
 - Health probe: `GET http://localhost:4000/health`
+- Auth (Phase 3): `POST /api/v1/auth/authenticate`, `GET /api/v1/auth/session` (`/me` alias), `POST /api/v1/auth/sign-out` — see `src/modules/auth/`
 - API docs (Swagger UI): `http://localhost:4000/docs`
 - OpenAPI JSON: `http://localhost:4000/docs/json`
 
@@ -101,17 +103,40 @@ Every error is normalized by `src/middleware/error-handler.ts`:
 Codes: `validation_failed` (400), `not_found` (404), `rate_limited` (429),
 `internal_error` (500, opaque by design), `request_error` (other 4xx).
 
+## Authentication (Phase 3)
+
+`POST /api/v1/auth/authenticate` accepts `{ role, identifier }` and returns the
+locked discriminated union `{ status: "authenticated", user } | { status:
+"identifier-not-found" } | { status: "role-unavailable" }` (always 200 for app
+outcomes; validation failures are 400 via the standard error envelope). Matching
+ignores case/spaces/dashes, is role-scoped, and rejects cross-role hits without
+an oracle. On success the response sets an `HttpOnly; SameSite=Lax` cookie
+(`jap_session`) whose value is an opaque server-side UUID — the browser never
+sees the session contents. `GET /api/v1/auth/session` (alias `/me`) re-validates
+the cookie and returns `{ user }` or 401; `POST /api/v1/auth/sign-out` revokes
+the server session and clears the cookie (idempotent).
+
+The demo registry in `src/modules/auth/service.ts` mirrors `src/data/seed.ts`
+and the legacy `frontend/src/js/auth/mock-auth.js` (12 accounts: platform,
+hospital admins, doctors, lab, pharmacy, patients with ABHA aliases) and exists
+only for demo/CI. Production will swap this registry for a Prisma-backed alias
+table without changing the route contract. See `docs/backend/03` and `06 §1` for
+the full contract and `docs/engineering/backend-phase3-auth-log.md` for phase
+decisions.
+
 ## Layout
 
 ```
 src/
   config/        env.ts (Zod config) · logger.ts (pino) · meta.ts (identity)
+  lib/           prisma.ts · session.ts (cookie session store, Phase 3)
   middleware/    error-handler.ts · request-id.ts
   modules/
     health/      GET /health
+    auth/        POST /api/v1/auth/authenticate, GET /session|/me, POST /sign-out (Phase 3)
   types/         Fastify module augmentation (app.env)
   app.ts         buildApp() factory (injectable for tests)
   server.ts      bootstrap + graceful shutdown
 tests/
-  app.test.ts    integration tests via fastify inject()
+  app.test.ts    cross-cutting + auth integration tests via fastify inject()
 ```

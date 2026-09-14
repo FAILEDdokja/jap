@@ -34,6 +34,7 @@ import { API_DESCRIPTION, API_TITLE, SERVICE_VERSION } from "./config/meta.js";
 import { registerErrorHandler } from "./middleware/error-handler.js";
 import { registerRequestId } from "./middleware/request-id.js";
 import { healthRoutes } from "./modules/health/routes.js";
+import { authRoutes } from "./modules/auth/routes.js";
 
 export async function buildApp() {
   const env = parseEnv();
@@ -88,7 +89,10 @@ export async function buildApp() {
         description: API_DESCRIPTION,
         version: SERVICE_VERSION,
       },
-      tags: [{ name: "meta", description: "Service metadata and probes" }],
+      tags: [
+        { name: "meta", description: "Service metadata and probes" },
+        { name: "auth", description: "Authentication and session (Phase 3 — docs/backend/03, 06 §1)" },
+      ],
     },
     transform: jsonSchemaTransform,
   });
@@ -98,6 +102,7 @@ export async function buildApp() {
   });
 
   await app.register(healthRoutes, { env });
+  await app.register(authRoutes, { prefix: "/api/v1/auth", env });
 
   return app;
 }

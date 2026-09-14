@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Jan Arogya Portal — REST API (Fastify · Zod · OpenAPI · Prisma/PostgreSQL). Phase 2: database.",
+  "description": "Jan Arogya Portal — REST API (Fastify · Zod · OpenAPI · Prisma/PostgreSQL). Phase 3: authentication.",
   "engines": {
     "node": ">=20"
   },
