@@ -31,6 +31,9 @@ const RawEnvSchema = z.object({
 
   /** Inbound header honored as the request ID; also echoed on every response. */
   REQUEST_ID_HEADER: z.string().min(1).default("x-request-id"),
+
+  /** PostgreSQL connection string (Prisma). Required for database-backed routes. */
+  DATABASE_URL: z.string().min(1).default("postgresql://postgres:postgres@localhost:5432/jap"),
 });
 
 export interface Env {
@@ -44,6 +47,7 @@ export interface Env {
   RATE_LIMIT_MAX: number;
   RATE_LIMIT_WINDOW: string;
   REQUEST_ID_HEADER: string;
+  DATABASE_URL: string;
 }
 
 /**
@@ -75,5 +79,6 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
     RATE_LIMIT_MAX: raw.RATE_LIMIT_MAX,
     RATE_LIMIT_WINDOW: raw.RATE_LIMIT_WINDOW,
     REQUEST_ID_HEADER: raw.REQUEST_ID_HEADER,
+    DATABASE_URL: raw.DATABASE_URL,
   };
 }
