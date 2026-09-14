@@ -35,6 +35,7 @@ import { registerErrorHandler } from "./middleware/error-handler.js";
 import { registerRequestId } from "./middleware/request-id.js";
 import { healthRoutes } from "./modules/health/routes.js";
 import { authRoutes } from "./modules/auth/routes.js";
+import { patientRoutes } from "./modules/patients/routes.js";
 
 export async function buildApp() {
   const env = parseEnv();
@@ -92,6 +93,7 @@ export async function buildApp() {
       tags: [
         { name: "meta", description: "Service metadata and probes" },
         { name: "auth", description: "Authentication and session (Phase 3 — docs/backend/03, 06 §1)" },
+        { name: "patients", description: "Patient records and external identity mapping (Phase 4 — docs/backend/04, 05, 06 §3)" },
       ],
     },
     transform: jsonSchemaTransform,
@@ -103,6 +105,7 @@ export async function buildApp() {
 
   await app.register(healthRoutes, { env });
   await app.register(authRoutes, { prefix: "/api/v1/auth", env });
+  await app.register(patientRoutes, { prefix: "/api/v1/patients", env });
 
   return app;
 }

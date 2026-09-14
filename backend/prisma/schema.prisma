@@ -65,6 +65,16 @@ enum Gender {
   Other
 }
 
+/// Lifecycle of the demographic record (Phase 4): `provisional` = walk-in /
+/// emergency intake captured with minimal demographics; `registered` =
+/// complete record. Deliberately INDEPENDENT of ABHA linkage — a patient can
+/// be registered, treated and discharged with no ABHA at all; linkage is
+/// derived from verified rows in `patient_identities`.
+enum PatientStatus {
+  provisional
+  registered
+}
+
 enum EncounterSetting {
   OPD
   IPD
@@ -347,6 +357,10 @@ model Patient {
   /// Owning tenant (registered the base demographic record).
   orgId String @map("org_id") @db.Uuid
   org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  /// Lifecycle (PatientStatus). No ABHA column here — external identifiers
+  /// live exclusively in `patient_identities`; ABHA linkage is derived.
+  status PatientStatus @default(registered)
 
   name   String
   gender Gender
