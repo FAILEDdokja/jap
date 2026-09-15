@@ -325,3 +325,8 @@ export function resetPatientStore(): void {
 }
 
 
+// Apply the synthetic seed at module load so a running server (dev, staging
+// walkthroughs) has the same three demo records the tests use. Tests call
+// `resetPatientStore()` again in `beforeEach` to stay isolated. All of this
+// data is SYNTHETIC — see docs/privacy/readiness-checklist.md.
+resetPatientStore();

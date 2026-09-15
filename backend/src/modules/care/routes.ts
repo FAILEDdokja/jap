@@ -13,6 +13,7 @@ import {
   EncounterResponseSchema, TimelineResponseSchema, UpdateEncounterBodySchema,
 } from "./schemas.js";
 import { writeAuditEvent } from "../audit/service.js";
+import { auditContext } from "../audit/context.js";
 
 const IdParams = z.object({ id: z.string().uuid() });
 const PatientParams = z.object({ patientId: z.string().uuid() });
@@ -37,21 +38,21 @@ export const careRoutes: FastifyPluginAsync<CareRoutesOptions> = async (instance
     const result = createEncounter(request.params.patientId, user, request.body);
     if (!result.ok) return failure(reply, request, result);
     request.log.info({ actorId: user.id, patientId: request.params.patientId, encounterId: result.value.id }, "care.encounter.create");
-    writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "CREATE_RECORD", resourceType: "ENCOUNTER", resourceId: result.value.id, requestId: request.id });
+    await writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "CREATE_RECORD", resourceType: "ENCOUNTER", resourceId: result.value.id, ...auditContext(request) });
     return reply.status(201).send({ encounter: result.value });
   });
 
   app.get("/patients/:patientId/encounters", { schema: { tags: ["care"], params: PatientParams, response: { 200: EncounterListResponseSchema, 404: CareErrorResponseSchema } } }, async (request, reply) => {
     const user = actor(request); if (!user) return unauthorized(request, reply);
     const result = listPatientEncounters(request.params.patientId);
-    if (result.ok) writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "VIEW_RECORD", resourceType: "ENCOUNTER", requestId: request.id });
+    if (result.ok) await writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "VIEW_RECORD", resourceType: "ENCOUNTER", ...auditContext(request) });
     return result.ok ? reply.send({ encounters: result.value }) : failure(reply, request, result);
   });
 
   app.get("/encounters/:id", { schema: { tags: ["care"], params: IdParams, response: { 200: EncounterResponseSchema, 404: CareErrorResponseSchema } } }, async (request, reply) => {
     const user = actor(request); if (!user) return unauthorized(request, reply);
     const encounter = getEncounter(request.params.id);
-    if (encounter) writeAuditEvent({ actor: user, patientId: encounter.patientId, action: "VIEW_RECORD", resourceType: "ENCOUNTER", resourceId: encounter.id, requestId: request.id });
+    if (encounter) await writeAuditEvent({ actor: user, patientId: encounter.patientId, action: "VIEW_RECORD", resourceType: "ENCOUNTER", resourceId: encounter.id, ...auditContext(request) });
     return encounter ? reply.send({ encounter }) : failure(reply, request, { code: "encounter_not_found", message: "Unable to load encounter." });
   });
 
@@ -60,14 +61,14 @@ export const careRoutes: FastifyPluginAsync<CareRoutesOptions> = async (instance
     const result = updateEncounter(request.params.id, request.body);
     if (!result.ok) return failure(reply, request, result);
     request.log.info({ actorId: user.id, encounterId: result.value.id }, "care.encounter.update");
-    writeAuditEvent({ actor: user, patientId: result.value.patientId, action: "UPDATE_RECORD", resourceType: "ENCOUNTER", resourceId: result.value.id, requestId: request.id });
+    await writeAuditEvent({ actor: user, patientId: result.value.patientId, action: "UPDATE_RECORD", resourceType: "ENCOUNTER", resourceId: result.value.id, ...auditContext(request) });
     return reply.send({ encounter: result.value });
   });
 
   app.get("/patients/:patientId/records", { schema: { tags: ["care"], params: PatientParams, response: { 200: ClinicalRecordListResponseSchema, 404: CareErrorResponseSchema } } }, async (request, reply) => {
     const user = actor(request); if (!user) return unauthorized(request, reply);
     const result = listPatientRecords(request.params.patientId);
-    if (result.ok) writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "VIEW_RECORD", resourceType: "CLINICAL_RECORD", requestId: request.id });
+    if (result.ok) await writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "VIEW_RECORD", resourceType: "CLINICAL_RECORD", ...auditContext(request) });
     return result.ok ? reply.send({ records: result.value }) : failure(reply, request, result);
   });
 
@@ -76,21 +77,21 @@ export const careRoutes: FastifyPluginAsync<CareRoutesOptions> = async (instance
     const result = createClinicalRecord(request.params.patientId, user, request.body);
     if (!result.ok) return failure(reply, request, result);
     request.log.info({ actorId: user.id, patientId: request.params.patientId, recordId: result.value.id, type: result.value.type }, "care.record.create");
-    writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "CREATE_RECORD", resourceType: result.value.type, resourceId: result.value.id, requestId: request.id });
+    await writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "CREATE_RECORD", resourceType: result.value.type, resourceId: result.value.id, ...auditContext(request) });
     return reply.status(201).send({ record: result.value });
   });
 
   app.get("/records/:id", { schema: { tags: ["care"], params: IdParams, response: { 200: ClinicalRecordResponseSchema, 404: CareErrorResponseSchema } } }, async (request, reply) => {
     const user = actor(request); if (!user) return unauthorized(request, reply);
     const record = getClinicalRecord(request.params.id);
-    if (record) writeAuditEvent({ actor: user, patientId: record.patientId, action: "VIEW_RECORD", resourceType: record.type, resourceId: record.id, requestId: request.id });
+    if (record) await writeAuditEvent({ actor: user, patientId: record.patientId, action: "VIEW_RECORD", resourceType: record.type, resourceId: record.id, ...auditContext(request) });
     return record ? reply.send({ record }) : failure(reply, request, { code: "record_not_found", message: "Unable to load clinical record." });
   });
 
   app.get("/patients/:patientId/timeline", { schema: { tags: ["care"], params: PatientParams, response: { 200: TimelineResponseSchema, 404: CareErrorResponseSchema } } }, async (request, reply) => {
     const user = actor(request); if (!user) return unauthorized(request, reply);
     const result = patientTimeline(request.params.patientId);
-    if (result.ok) writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "VIEW_RECORD", resourceType: "TIMELINE", requestId: request.id });
+    if (result.ok) await writeAuditEvent({ actor: user, patientId: request.params.patientId, action: "VIEW_RECORD", resourceType: "TIMELINE", ...auditContext(request) });
     return result.ok ? reply.send({ events: result.value }) : failure(reply, request, result);
   });
 };

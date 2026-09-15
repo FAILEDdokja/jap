@@ -1,3 +1,13 @@
+/*
+ * Self-hosted Inter (Phase 4.9 — docs/decisions/0011-frontend-assets.md).
+ *
+ * `@fontsource-variable/inter` ships the woff2 files as a normal dependency;
+ * Vite fingerprints them into dist/assets, so the production build has no
+ * runtime dependency on fonts.gstatic.com. The variable font covers the whole
+ * 400-800 range the design uses in a single file.
+ */
+@import "@fontsource-variable/inter/index.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

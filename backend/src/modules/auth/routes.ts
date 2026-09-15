@@ -30,14 +30,17 @@ import {
   SessionResponseSchema,
 } from "./schemas.js";
 import {
-  createSession,
   deleteSession,
   getSessionIdFromRequest,
   getSession,
+  rotateOnAuthentication,
   setSessionCookie,
   clearSessionCookie,
 } from "../../lib/session.js";
+import { buildPolicies, enforceRateLimit, recordFailure, targetKey } from "../../middleware/rate-limit.js";
+import { metrics } from "../../observability/metrics.js";
 import { writeAuditEvent } from "../audit/service.js";
+import { auditContext } from "../audit/context.js";
 
 export interface AuthRoutesOptions {
   env: Env;
@@ -45,6 +48,7 @@ export interface AuthRoutesOptions {
 
 export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance, { env }) => {
   const app = instance.withTypeProvider<ZodTypeProvider>();
+  const policies = buildPolicies(env);
 
   // POST /api/v1/auth/authenticate
   app.post(
@@ -63,10 +67,28 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
     async (request, reply) => {
       const { role, identifier } = request.body as { role: string; identifier: string };
 
+      // Abuse protection (docs/decisions/0004-rate-limiting.md):
+      //   - per-IP budget is consumed by EVERY attempt, so a flood from one
+      //     network is rejected cheaply and without an enumeration oracle
+      //   - the per-target budget is only *checked* here and charged below on
+      //     failure, so a user signing in repeatedly and correctly is never
+      //     locked out of their own account
+      // The target is HMAC-hashed: the limiter never holds a plaintext
+      // identifier in memory or in a log.
+      const target = targetKey(env, `${role}:${identifier}`);
+      if (enforceRateLimit(request, reply, { policy: policies.authentication, mode: "peek", targetHash: target })) {
+        return reply;
+      }
+      if (enforceRateLimit(request, reply, { policy: policies.authentication })) {
+        return reply;
+      }
+
       const result = authenticateService({ role, identifier });
 
       if (result.status === "authenticated") {
-        const sessionId = createSession(env, {
+        // Session fixation resistance: any pre-existing session id presented
+        // by the caller is destroyed and a fresh one minted (doc 09 §4).
+        const sessionId = rotateOnAuthentication(request, env, {
           id: result.user.id,
           role: result.user.role,
           name: result.user.name,
@@ -79,7 +101,10 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
           { actorId: result.user.id, role: result.user.role, status: result.status },
           "auth.authenticate success",
         );
-        writeAuditEvent({ actor: result.user, action: "LOGIN", resourceType: "SESSION", resourceId: sessionId, requestId: request.id });
+        metrics.authAttempts.inc({ result: "success", role: result.user.role });
+        metrics.sessionEvents.inc({ event: "created" });
+        // The session id is a bearer credential: audit the *event*, not the id.
+        await writeAuditEvent({ actor: result.user, action: "LOGIN", resourceType: "SESSION", ...auditContext(request) });
         return reply.status(200).send(result);
       }
 
@@ -88,7 +113,9 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
         { role, status: result.status },
         "auth.authenticate non-success",
       );
-      writeAuditEvent({ action: "FAILED_LOGIN", resourceType: "AUTHENTICATION", requestId: request.id, status: "blocked" });
+      metrics.authAttempts.inc({ result: "failure", role });
+      recordFailure(policies.authentication, "target", target);
+      await writeAuditEvent({ action: "FAILED_LOGIN", resourceType: "AUTHENTICATION", ...auditContext(request), status: "blocked" });
       return reply.status(200).send(result);
     },
   );
@@ -105,7 +132,7 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
         },
       });
     }
-    const session = getSession(sessionId);
+    const session = getSession(sessionId, env);
     if (!session) {
       return reply.status(401).send({
         error: {
@@ -159,8 +186,19 @@ export const authRoutes: FastifyPluginAsync<AuthRoutesOptions> = async (instance
     async (request, reply) => {
       const sessionId = getSessionIdFromRequest(request, env);
       if (sessionId) {
+        const session = getSession(sessionId, env);
         deleteSession(sessionId);
-        request.log.info({ sessionId }, "auth.sign-out session revoked");
+        metrics.sessionEvents.inc({ event: "revoked" });
+        // Never log the session id — it is a bearer credential.
+        request.log.info({ requestId: request.id }, "auth.sign-out session revoked");
+        if (session) {
+          await writeAuditEvent({
+            actor: session.user,
+            action: "LOGOUT",
+            resourceType: "SESSION",
+            ...auditContext(request),
+          });
+        }
       }
       clearSessionCookie(reply, env);
       return reply.status(200).send({ status: "signed-out" });

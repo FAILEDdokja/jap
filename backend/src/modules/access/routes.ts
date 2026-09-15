@@ -5,6 +5,7 @@ import { requireSession } from "../../lib/session.js";
 import { evaluateAccess } from "./service.js";
 import { AccessDecisionResponseSchema, EvaluateAccessBodySchema } from "./schemas.js";
 import { writeAuditEvent } from "../audit/service.js";
+import { auditContext } from "../audit/context.js";
 
 export interface AccessRoutesOptions { env: Env; }
 
@@ -26,10 +27,10 @@ export const accessRoutes: FastifyPluginAsync<AccessRoutesOptions> = async (inst
     const session = requireSession(request, env);
     if (!session) return unauthenticated(request, reply);
     const decision = evaluateAccess(session.user, request.body);
-    writeAuditEvent({
+    await writeAuditEvent({
       actor: session.user, patientId: request.body.patientId,
       action: decision.allowed ? "ACCESS_ALLOWED" : "ACCESS_DENIED", resourceType: request.body.recordType,
-      purpose: request.body.purpose, authorizationId: decision.consentId ?? undefined, requestId: request.id,
+      purpose: request.body.purpose, authorizationId: decision.consentId ?? undefined, ...auditContext(request),
       status: decision.allowed ? "success" : "blocked",
     });
     request.log.info({ actorId: session.user.id, patientId: request.body.patientId, recordType: request.body.recordType, allowed: decision.allowed, reason: decision.reason, consentId: decision.consentId }, "access.evaluate");

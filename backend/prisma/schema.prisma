@@ -950,6 +950,20 @@ model AuditEvent {
   patientId String? @map("patient_id") @db.Uuid
   patient   Patient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
 
+  /// Opaque actor/organization/patient references. The audit writer is
+  /// decoupled from the account store: an event must be writable even when the
+  /// principal has no `users` row (current registry-backed demo principals) or
+  /// when the row was later removed. The UUID FKs above stay for the day the
+  /// account store moves into the database.
+  actorRef     String? @map("actor_ref")
+  actorRoleRef String? @map("actor_role_ref")
+  orgRef       String? @map("org_ref")
+  patientRef   String? @map("patient_ref")
+
+  /// Coarse provenance for anomaly detection — never a device fingerprint.
+  sourceIp    String? @map("source_ip")
+  deviceClass String? @map("device_class")
+
   status AuditStatus
   detail String? @db.Text
 
@@ -957,6 +971,9 @@ model AuditEvent {
   prevEventId String? @unique @map("prev_event_id") @db.Uuid
   prevEvent   AuditEvent? @relation("AuditChain", fields: [prevEventId], references: [id], onDelete: Restrict)
   next        AuditEvent? @relation("AuditChain")
+  /// Digest of the preceding event — lets verification detect a broken link
+  /// even if the predecessor row is unreachable.
+  prevHash    String? @map("prev_hash")
   /// SHA-256 digest of this event's envelope (opaque refs only — no PHI).
   hash        String
 
@@ -974,6 +991,9 @@ model AuditEvent {
   @@index([authorizationId])
   @@index([requestId])
   @@index([ts])
+  @@index([actorRef])
+  @@index([orgRef])
+  @@index([patientRef])
   @@map("audit_events")
 }
 

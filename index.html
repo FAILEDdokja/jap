@@ -6,9 +6,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Jan Arogya Nexus — Consent-Aware Continuity of Care. A healthcare coordination platform that assembles authorized clinical context across hospitals, labs and pharmacies." />
     <title>Jan Arogya Nexus</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <!--
+      Fonts are SELF-HOSTED (Phase 4.9). Inter is bundled via
+      `@fontsource-variable/inter`, imported from src/index.css and emitted into
+      the build output by Vite. There is deliberately no <link> to
+      fonts.googleapis.com / fonts.gstatic.com here:
+
+        * a public-health portal must not make every page view a request to a
+          third-party CDN that sees the user's IP and referrer
+        * the app must render correctly on a restricted network and offline
+        * a CDN <link> would force `style-src`/`font-src` to allow an external
+          origin in the CSP; self-hosting keeps both at 'self'
+
+      See docs/decisions/0011-frontend-assets.md.
+    -->
   </head>
   <body>
     <div id="root"></div>
