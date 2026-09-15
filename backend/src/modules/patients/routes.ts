@@ -39,6 +39,7 @@ import {
   UpdatePatientBodySchema,
 } from "./schemas.js";
 import { writeAuditEvent } from "../audit/service.js";
+import { auditContext } from "../audit/context.js";
 
 export interface PatientRoutesOptions {
   env: Env;
@@ -103,7 +104,7 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
         { actorId: actor.id, patientId: result.value.id, status: result.value.status, identities: result.value.identities.length },
         "patients.create",
       );
-      writeAuditEvent({ actor, patientId: result.value.id, action: "CREATE_RECORD", resourceType: "PATIENT", resourceId: result.value.id, requestId: request.id });
+      await writeAuditEvent({ actor, patientId: result.value.id, action: "CREATE_RECORD", resourceType: "PATIENT", resourceId: result.value.id, ...auditContext(request) });
       return reply.status(201).send({ patient: result.value });
     },
   );
@@ -162,7 +163,7 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
       }
 
       request.log.info({ actorId: actor.id, patientId: patient.id }, "patients.get");
-      writeAuditEvent({ actor, patientId: patient.id, action: "VIEW_RECORD", resourceType: "PATIENT", resourceId: patient.id, requestId: request.id });
+      await writeAuditEvent({ actor, patientId: patient.id, action: "VIEW_RECORD", resourceType: "PATIENT", resourceId: patient.id, ...auditContext(request) });
       return reply.status(200).send({ patient });
     },
   );
@@ -214,7 +215,7 @@ export const patientRoutes: FastifyPluginAsync<PatientRoutesOptions> = async (in
         { actorId: actor.id, patientId: result.value.id, state: result.value.state },
         "patients.update",
       );
-      writeAuditEvent({ actor, patientId: result.value.id, action: "UPDATE_RECORD", resourceType: "PATIENT", resourceId: result.value.id, requestId: request.id });
+      await writeAuditEvent({ actor, patientId: result.value.id, action: "UPDATE_RECORD", resourceType: "PATIENT", resourceId: result.value.id, ...auditContext(request) });
       return reply.status(200).send({ patient: result.value });
     },
   );

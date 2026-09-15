@@ -1,0 +1,240 @@
+# Jan Arogya Nexus — CI quality gates (Phase 4.10).
+#
+# Deliberately minimal: gates only, no deployment pipeline. Phase 4 forbids
+# building a deploy pipeline for a provider nobody has chosen
+# (docs/decisions/0005-deployment-and-residency.md).
+#
+# Gates:
+#   frontend  — typecheck + production build
+#   backend   — typecheck + tests (including the PostgreSQL audit suite)
+#   database  — Prisma schema validity + migrations apply cleanly, in order
+#   security  — dependency audit + a check that no .env file is committed
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A new push to the same ref makes the previous run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend — typecheck and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # `npm ci` requires the lockfile to match package.json — an unpinned or
+      # drifted dependency fails here rather than in production.
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Production build
+        run: npm run build
+
+      # Phase 4.9: the build must not depend on an external CDN at runtime.
+      # Self-hosted fonts mean no fonts.googleapis.com / fonts.gstatic.com.
+      # Matches only real `src=`/`href=`/`url()` references, so the explanatory
+      # HTML comment in index.html (which names the domains it deliberately
+      # does NOT load) does not trip the gate.
+      - name: Assert no external CDN in the build output
+        run: |
+          if grep -rEnI "(src|href)=\"https?://(fonts\.(googleapis|gstatic)\.com|cdn\.tailwindcss\.com)|url\(https?://(fonts\.(googleapis|gstatic)\.com|cdn\.tailwindcss\.com)" dist; then
+            echo "::error::Build output loads an external CDN — see docs/decisions/0011-frontend-assets.md"
+            exit 1
+          fi
+          echo "No external CDN references loaded by dist/."
+
+  backend:
+    name: Backend — typecheck and tests
+    runs-on: ubuntu-latest
+
+    # A real PostgreSQL so the append-only / hash-chain / concurrency tests
+    # actually execute instead of skipping.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: jap_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/jap_test
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      # The audit suite skips when no database is reachable. A green run must
+      # never imply coverage that did not execute, so assert it ran.
+      - name: Assert the PostgreSQL audit suite was not skipped
+        run: |
+          npx vitest run tests/audit-postgres.test.ts --reporter=json --outputFile=/tmp/pg.json
+          node -e "
+            const r = require('/tmp/pg.json');
+            const skipped = r.testResults.flatMap(f => f.assertionResults).filter(a => a.status === 'pending');
+            const passed  = r.testResults.flatMap(f => f.assertionResults).filter(a => a.status === 'passed');
+            if (passed.length < 10) {
+              console.error('::error::PostgreSQL audit suite did not run (' + passed.length + ' passed)');
+              process.exit(1);
+            }
+            console.log('PostgreSQL audit suite ran: ' + passed.length + ' passed, ' + skipped.length + ' skipped.');
+          "
+
+  database:
+    name: Database — schema and migrations
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: jap_migrations
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/jap_migrations
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+
+      - name: Validate the Prisma schema
+        run: npx prisma validate
+
+      - name: Apply every migration to a clean database
+        run: npx prisma migrate deploy
+
+      # Catches a schema.prisma edited without a matching migration — the
+      # failure mode that silently diverges dev from production.
+      - name: Assert the schema and the migrations agree
+        run: npx prisma migrate diff
+          --from-migrations prisma/migrations
+          --to-schema-datamodel prisma/schema.prisma
+          --shadow-database-url "$DATABASE_URL"
+          --exit-code
+
+      # Phase 4.2: append-only is a database guarantee, so verify it against
+      # the migrated schema rather than trusting the migration was applied.
+      - name: Assert audit_events is append-only
+        run: |
+          npx tsx --eval "
+            import { Client } from 'pg';
+            const c = new Client({ connectionString: process.env.DATABASE_URL });
+            await c.connect();
+            const { rows } = await c.query(\`
+              SELECT tgname FROM pg_trigger
+              WHERE tgrelid = 'audit_events'::regclass AND NOT tgisinternal
+            \`);
+            const names = rows.map(r => r.tgname);
+            for (const required of ['audit_events_no_update', 'audit_events_no_delete']) {
+              if (!names.includes(required)) {
+                console.error('::error::missing append-only trigger: ' + required);
+                process.exit(1);
+              }
+            }
+            console.log('Append-only triggers present: ' + names.join(', '));
+            await c.end();
+          "
+
+  security:
+    name: Security — dependencies and secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Fails the build on a high/critical advisory. Moderate and below are
+      # reported but do not block, so CI stays actionable rather than
+      # permanently red on a transitive dev-only advisory.
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+
+      - name: Audit backend dependencies
+        working-directory: backend
+        run: npm audit --audit-level=high
+
+      - name: Report all advisories (non-blocking)
+        if: always()
+        run: |
+          echo "--- frontend ---"; npm audit || true
+          echo "--- backend ---";  (cd backend && npm audit) || true
+
+      # docs/backend/09 §4: no secrets in the repository. Only .example
+      # templates are permitted.
+      - name: Assert no committed .env file
+        run: |
+          leaked=$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '\.example$' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::environment file committed: $leaked"
+            exit 1
+          fi
+          echo "No .env files committed."
+
+      - name: Assert lockfiles are committed
+        run: |
+          test -f package-lock.json || { echo "::error::missing package-lock.json"; exit 1; }
+          test -f backend/package-lock.json || { echo "::error::missing backend/package-lock.json"; exit 1; }
+          echo "Lockfiles present — dependencies are pinned."

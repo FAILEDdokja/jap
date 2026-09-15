@@ -10,13 +10,25 @@ import type { Env } from "./env.js";
 import { SERVICE_NAME } from "./meta.js";
 
 export function buildLoggerOptions(env: Env): FastifyServerOptions["logger"] {
-  if (env.NODE_ENV === "test") return false;
+  // `silent` and the test environment disable the transport entirely, which is
+  // also how a test that exercises production *configuration* keeps its output
+  // readable without pretending to be the test environment.
+  if (env.NODE_ENV === "test" || env.LOG_LEVEL === "silent") return false;
 
   const base = {
     level: env.LOG_LEVEL,
     base: { service: SERVICE_NAME },
+    // Defence in depth: even if a call site logs a whole request/response, the
+    // credential-bearing headers never reach disk (docs/backend/09 §3).
     redact: {
-      paths: ["req.headers.authorization", "req.headers.cookie"],
+      paths: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "res.headers['set-cookie']",
+        "req.body.identifier",
+        "req.body.otp",
+        "req.body.password",
+      ],
       censor: "[redacted]",
     },
     serializers: {

@@ -17,6 +17,7 @@
  */
 import type { FastifyError, FastifyInstance } from "fastify";
 import { ZodError } from "zod";
+import { AuditUnavailableError } from "../modules/audit/service.js";
 
 interface ErrorEnvelope {
   error: {
@@ -47,9 +48,29 @@ export function registerErrorHandler(app: FastifyInstance, options: ErrorHandler
       reply.status(status).send(envelope);
     };
 
+    // Audit outage — fail-closed. The action was refused precisely so that no
+    // unaudited security/clinical write can happen
+    // (docs/decisions/0002-audit-failure-policy.md).
+    if (error instanceof AuditUnavailableError) {
+      request.log.error({ err: error, requestId }, "audit unavailable — request refused");
+      return send(503, {
+        error: {
+          code: "audit_unavailable",
+          message: "This action was not completed because it could not be recorded. Please retry.",
+          requestId,
+        },
+      });
+    }
+
     // Rate limiting (from @fastify/rate-limit).
     if (error.statusCode === 429 || error.code === "FST_RATE_LIMIT") {
       request.log.warn({ requestId }, "rate limit exceeded");
+      // @fastify/rate-limit puts the wait time on the reply; make sure a
+      // Retry-After always accompanies a 429 (docs/backend/09 §4).
+      if (!reply.getHeader("retry-after")) {
+        const reset = reply.getHeader("x-ratelimit-reset");
+        reply.header("retry-after", String(reset ?? 60));
+      }
       return send(429, {
         error: {
           code: "rate_limited",
@@ -113,11 +134,14 @@ export function registerErrorHandler(app: FastifyInstance, options: ErrorHandler
       });
     }
 
-    // Other 4xx (client-originated, safe to surface).
+    // Other 4xx (client-originated). In production the message is replaced by
+    // a generic one: a framework/driver error that happens to carry a 4xx can
+    // still leak internals (table names, constraint names, upstream URLs).
+    // Outside production the real message helps developers.
     return send(status, {
       error: {
         code: "request_error",
-        message: error.message,
+        message: options.exposeDetails ? error.message : "The request could not be processed.",
         requestId,
       },
     });

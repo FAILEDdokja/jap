@@ -6,6 +6,7 @@ import { requireSession } from "../../lib/session.js";
 import { approveConsent, createConsent, getConsentView, listConsents, rejectConsent, revokeConsent } from "./service.js";
 import { ConsentErrorResponseSchema, ConsentListResponseSchema, ConsentResponseSchema, CreateConsentBodySchema, DecisionBodySchema, ListConsentsQuerySchema } from "./schemas.js";
 import { writeAuditEvent } from "../audit/service.js";
+import { auditContext } from "../audit/context.js";
 
 const IdParams = z.object({ id: z.string().uuid() });
 export interface ConsentRoutesOptions { env: Env; }
@@ -28,7 +29,7 @@ export const consentRoutes: FastifyPluginAsync<ConsentRoutesOptions> = async (in
     const result = createConsent(user, request.body);
     if (!result.ok) return failure(reply, request, result);
     request.log.info({ actorId: user.id, consentId: result.value.id, patientId: result.value.patientId }, "consent.create");
-    writeAuditEvent({ actor: user, patientId: result.value.patientId, action: "CONSENT_CREATED", resourceType: "CONSENT", resourceId: result.value.id, purpose: result.value.purpose, requestId: request.id });
+    await writeAuditEvent({ actor: user, patientId: result.value.patientId, action: "CONSENT_CREATED", resourceType: "CONSENT", resourceId: result.value.id, purpose: result.value.purpose, ...auditContext(request) });
     return reply.status(201).send({ consent: result.value });
   });
 
@@ -53,10 +54,10 @@ export const consentRoutes: FastifyPluginAsync<ConsentRoutesOptions> = async (in
       const result = decide(request.params.id, user, request.body.note);
       if (!result.ok) return failure(reply, request, result);
       request.log.info({ actorId: user.id, consentId: result.value.id, status: result.value.status }, `consent.${action}`);
-      writeAuditEvent({
+      await writeAuditEvent({
         actor: user, patientId: result.value.patientId,
         action: result.value.status === "APPROVED" ? "CONSENT_APPROVED" : result.value.status === "REVOKED" ? "CONSENT_REVOKED" : "CONSENT_REJECTED",
-        resourceType: "CONSENT", resourceId: result.value.id, purpose: result.value.purpose, requestId: request.id,
+        resourceType: "CONSENT", resourceId: result.value.id, purpose: result.value.purpose, ...auditContext(request),
       });
       return reply.send({ consent: result.value });
     });

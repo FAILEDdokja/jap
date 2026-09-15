@@ -28,21 +28,37 @@ import {
   validatorCompiler,
   type ZodTypeProvider,
 } from "fastify-type-provider-zod";
-import { parseEnv } from "./config/env.js";
+import { parseEnv, type Env } from "./config/env.js";
 import { buildLoggerOptions } from "./config/logger.js";
 import { API_DESCRIPTION, API_TITLE, SERVICE_VERSION } from "./config/meta.js";
 import { registerErrorHandler } from "./middleware/error-handler.js";
 import { registerRequestId } from "./middleware/request-id.js";
-import { healthRoutes } from "./modules/health/routes.js";
+import { healthRoutes, type ReadinessCheck } from "./modules/health/routes.js";
+import { observabilityRoutes } from "./modules/observability/routes.js";
 import { authRoutes } from "./modules/auth/routes.js";
 import { patientRoutes } from "./modules/patients/routes.js";
 import { careRoutes } from "./modules/care/routes.js";
 import { consentRoutes } from "./modules/consents/routes.js";
 import { accessRoutes } from "./modules/access/routes.js";
 import { auditRoutes } from "./modules/audit/routes.js";
+import { configureAuditPolicy, configureAuditStore, getAuditStore } from "./modules/audit/service.js";
+import { registerObservability } from "./observability/http.js";
 
-export async function buildApp() {
-  const env = parseEnv();
+export interface BuildAppOptions {
+  /** Override the parsed configuration (tests). */
+  env?: Env;
+  /** Extra readiness dependencies (tests inject a failing DB probe). */
+  readinessChecks?: ReadinessCheck[];
+  /** Database client for the Postgres audit store. */
+  databaseClient?: unknown;
+}
+
+export async function buildApp(options: BuildAppOptions = {}) {
+  const env = options.env ?? parseEnv();
+
+  // Audit wiring must happen before any route can write an event.
+  configureAuditPolicy(env);
+  configureAuditStore(env, options.databaseClient);
 
   const app = Fastify({
     logger: buildLoggerOptions(env),
@@ -60,15 +76,46 @@ export async function buildApp() {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
-  // Security headers. CSP is disabled because the bundled Swagger UI needs
-  // inline scripts/styles; revisit when /docs is disabled in production.
+  // Security headers.
+  //
+  // CSP: the bundled Swagger UI needs inline scripts/styles, so CSP is
+  // disabled only while /docs is served. In production /docs is off by default
+  // (`DOCS_ENABLED`), so a real CSP applies. `frame-ancestors 'none'` and
+  // `default-src 'none'` are right for a JSON API — it renders no HTML of its
+  // own once the docs UI is gone.
+  //
+  // HSTS: emitted when `HSTS_ENABLED` (default: on in production). If TLS is
+  // terminated by a proxy that already sets HSTS, set HSTS_ENABLED=false to
+  // avoid a duplicate header (docs/decisions/0005-deployment-and-residency.md).
   await app.register(helmet, {
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: env.DOCS_ENABLED
+      ? false
+      : {
+          directives: {
+            defaultSrc: ["'none'"],
+            frameAncestors: ["'none'"],
+            baseUri: ["'none'"],
+            formAction: ["'none'"],
+          },
+        },
+    hsts: env.HSTS_ENABLED
+      ? { maxAge: env.HSTS_MAX_AGE_SECONDS, includeSubDomains: true, preload: false }
+      : false,
+    // The API is never framed and never sniffed.
+    frameguard: { action: "deny" },
+    referrerPolicy: { policy: "no-referrer" },
   });
 
+  // CORS: an explicit allowlist, never a wildcard, and never a reflected
+  // origin. `parseEnv` refuses to boot production with '*', a loopback origin,
+  // or a non-https origin (docs/decisions/0006-cors-policy.md).
   await app.register(cors, {
     origin: env.CORS_ORIGINS,
     credentials: env.CORS_CREDENTIALS,
+    // Only the headers the browser client actually sends/reads.
+    allowedHeaders: ["content-type", env.REQUEST_ID_HEADER],
+    exposedHeaders: [env.REQUEST_ID_HEADER, "retry-after"],
+    maxAge: 600,
   });
 
   if (env.RATE_LIMIT_ENABLED) {
@@ -85,6 +132,7 @@ export async function buildApp() {
   }
 
   registerRequestId(app, env.REQUEST_ID_HEADER);
+  registerObservability(app, env);
   registerErrorHandler(app, { exposeDetails: env.NODE_ENV !== "production" });
 
   await app.register(swagger, {
@@ -106,12 +154,26 @@ export async function buildApp() {
     },
     transform: jsonSchemaTransform,
   });
-  await app.register(swaggerUi, {
-    routePrefix: "/docs",
-    uiConfig: { docExpansion: "list", deepLinking: true },
-  });
+  // The Swagger UI is unauthenticated and inlines scripts; it is off in
+  // production unless an operator sets DOCS_ENABLED=true deliberately.
+  if (env.DOCS_ENABLED) {
+    await app.register(swaggerUi, {
+      routePrefix: "/docs",
+      uiConfig: { docExpansion: "list", deepLinking: true },
+    });
+  }
 
-  await app.register(healthRoutes, { env });
+  // Readiness dependencies. The audit store doubles as the database probe:
+  // if the audit log cannot be reached the instance cannot serve safely,
+  // because every clinical write is fail-closed on audit.
+  const readinessChecks: ReadinessCheck[] =
+    options.readinessChecks ??
+    (env.AUDIT_STORE === "postgres"
+      ? [{ name: "database", required: true, probe: () => getAuditStore().ping() }]
+      : []);
+
+  await app.register(healthRoutes, { env, checks: readinessChecks });
+  if (env.METRICS_ENABLED) await app.register(observabilityRoutes, { env });
   await app.register(authRoutes, { prefix: "/api/v1/auth", env });
   await app.register(patientRoutes, { prefix: "/api/v1/patients", env });
   await app.register(careRoutes, { prefix: "/api/v1", env });

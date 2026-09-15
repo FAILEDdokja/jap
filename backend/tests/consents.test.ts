@@ -14,7 +14,7 @@ async function signIn(app: Awaited<ReturnType<typeof buildApp>>, role: string, i
   return cookie(res);
 }
 
-async function patientId(app: Awaited<ReturnType<typeof buildApp>>, session: string, name = "Amit"): Promise<string> {
+async function firstPatientId(app: Awaited<ReturnType<typeof buildApp>>, session: string, name = "Amit"): Promise<string> {
   const res = await app.inject({ method: "GET", url: `/api/v1/patients?q=${name}`, headers: { cookie: session } });
   return res.json().patients[0].id;
 }
@@ -29,7 +29,7 @@ describe("Phase 6 consent APIs", () => {
   it("creates a purpose- and record-type-scoped request from the authenticated requester", async () => {
     const app = await buildApp();
     const doctor = await signIn(app, "DOCTOR", "HP-1001");
-    const patientId = await patientId(app, doctor);
+    const patientId = await firstPatientId(app, doctor);
     const res = await app.inject({
       method: "POST", url: "/api/v1/consents", headers: { cookie: doctor },
       payload: { patientId, purpose: "TREATMENT", recordTypes: ["DIAGNOSIS", "LAB_RESULT", "DIAGNOSIS"], validUntil: "2026-12-31" },
@@ -43,7 +43,7 @@ describe("Phase 6 consent APIs", () => {
   it("allows only a patient to approve, then revoke, a requested consent", async () => {
     const app = await buildApp();
     const doctor = await signIn(app, "DOCTOR", "HP-1001");
-    const patientId = await patientId(app, doctor);
+    const patientId = await firstPatientId(app, doctor);
     const created = await app.inject({ method: "POST", url: "/api/v1/consents", headers: { cookie: doctor }, payload: { patientId, purpose: "TREATMENT", recordTypes: ["PRESCRIPTION"], validUntil: "2026-12-31" } });
     const id = created.json().consent.id;
 
@@ -65,7 +65,7 @@ describe("Phase 6 consent APIs", () => {
   it("expires a consent automatically and blocks later approval", async () => {
     const app = await buildApp();
     const doctor = await signIn(app, "DOCTOR", "HP-1001");
-    const patientId = await patientId(app, doctor);
+    const patientId = await firstPatientId(app, doctor);
     const created = await app.inject({ method: "POST", url: "/api/v1/consents", headers: { cookie: doctor }, payload: { patientId, purpose: "RESEARCH", recordTypes: ["OBSERVATION"], validFrom: "2020-01-01", validUntil: "2020-01-02" } });
     const patient = await signIn(app, "PATIENT", "23-4567-8912-3401");
     const approval = await app.inject({ method: "POST", url: `/api/v1/consents/${created.json().consent.id}/approve`, headers: { cookie: patient }, payload: {} });
@@ -80,7 +80,7 @@ describe("Phase 6 consent APIs", () => {
   it("does not let one patient decide another patient's consent", async () => {
     const app = await buildApp();
     const doctor = await signIn(app, "DOCTOR", "HP-1001");
-    const priya = await patientId(app, doctor, "Priya");
+    const priya = await firstPatientId(app, doctor, "Priya");
     const created = await app.inject({ method: "POST", url: "/api/v1/consents", headers: { cookie: doctor }, payload: { patientId: priya, purpose: "TREATMENT", recordTypes: ["LAB_RESULT"], validUntil: "2026-12-31" } });
     const amit = await signIn(app, "PATIENT", "23-4567-8912-3401");
 

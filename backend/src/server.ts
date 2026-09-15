@@ -5,10 +5,17 @@
  * requests drain on SIGINT/SIGTERM before the process exits.
  */
 import { buildApp } from "./app.js";
-import { prisma } from "./lib/prisma.js";
+import { prisma, prismaAvailable } from "./lib/prisma.js";
+import { closeAuditStore } from "./modules/audit/service.js";
 
 async function main(): Promise<void> {
-  const app = await buildApp();
+  // Share the Prisma connection pool with the Postgres audit store when the
+  // generated client is usable. When it is not (Prisma's engine binaries are
+  // not downloadable in every environment — see
+  // docs/engineering/backend-phase2-database-log.md), the audit store opens its
+  // own small `pg` pool instead. The audit chain SQL is identical either way.
+  const databaseClient = prismaAvailable() ? prisma : undefined;
+  const app = await buildApp({ databaseClient });
 
   try {
     await app.listen({ port: app.env.PORT, host: app.env.HOST });
@@ -23,7 +30,8 @@ async function main(): Promise<void> {
     shuttingDown = true;
     app.log.info({ signal }, "shutting down gracefully");
     try {
-      await prisma.$disconnect();
+      await closeAuditStore();
+      await prisma.$disconnect?.();
       await app.close();
       process.exit(0);
     } catch (err) {
