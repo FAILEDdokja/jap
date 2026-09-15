@@ -47,6 +47,10 @@ export function migrationFiles(): string[] {
 }
 
 export async function applyMigrations(pool: Pool): Promise<void> {
+  const check = await pool.query("SELECT to_regclass('audit_events') AS exists;");
+  if (check.rows[0]?.exists) {
+    return;
+  }
   await pool.query(PRELUDE);
   for (const file of migrationFiles()) {
     const sql = readFileSync(file, "utf8");

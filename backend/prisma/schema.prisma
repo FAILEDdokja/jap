@@ -897,10 +897,6 @@ model AccessDecision {
   patientId String? @map("patient_id") @db.Uuid
   patient   Patient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
 
-  purpose         String?
-  authorizationId String? @map("authorization_id") @db.Uuid
-  requestId       String? @map("request_id")
-
   result AccessDecisionResult
   reason String
 
