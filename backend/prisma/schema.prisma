@@ -788,7 +788,7 @@ model Consent {
   decidedBy   User?    @relation("ConsentDecider", fields: [decidedById], references: [id], onDelete: SetNull)
 
   note String? @db.Text
-  revokedAt DateTime? @map("revoked_at")
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -962,7 +962,7 @@ model AuditEvent {
 
   /// Access-control context — carried so the audit trail records which consent
   /// or authorization backed the action (doc 09 §2, migration 20260915090000).
-  purpose         String? @db.Text
+  purpose         String?
   authorizationId String? @map("authorization_id") @db.Uuid
   requestId       String? @map("request_id")
 

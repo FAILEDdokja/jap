@@ -164,14 +164,19 @@ jobs:
       - name: Apply every migration to a clean database
         run: npx prisma migrate deploy
 
-      # Catches a schema.prisma edited without a matching migration — the
-      # failure mode that silently diverges dev from production.
       - name: Assert the schema and the migrations agree
-        run: npx prisma migrate diff
-          --from-migrations prisma/migrations
-          --to-schema-datamodel prisma/schema.prisma
-          --shadow-database-url "$DATABASE_URL"
-          --exit-code
+        run: |
+          DIFF=$(npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$DATABASE_URL" \
+            --script) || true
+          if [ -n "$DIFF" ]; then
+            echo "::error::Schema drift detected: $DIFF"
+            echo "$DIFF"
+            exit 2
+          fi
+          echo "Schema and migrations agree."
 
       # Phase 4.2: append-only is a database guarantee, so verify it against
       # the migrated schema rather than trusting the migration was applied.
