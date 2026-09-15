@@ -964,6 +964,12 @@ model AuditEvent {
   sourceIp    String? @map("source_ip")
   deviceClass String? @map("device_class")
 
+  /// Access-control context — carried so the audit trail records which consent
+  /// or authorization backed the action (doc 09 §2, migration 20260915090000).
+  purpose         String? @db.Text
+  authorizationId String? @map("authorization_id") @db.Uuid
+  requestId       String? @map("request_id")
+
   status AuditStatus
   detail String? @db.Text
 
