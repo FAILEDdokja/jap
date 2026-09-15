@@ -172,8 +172,9 @@ jobs:
             --shadow-database-url "$DATABASE_URL" \
             --script) || true
           if [ -n "$DIFF" ]; then
-            echo "::error::Schema drift detected: $DIFF"
-            echo "$DIFF"
+            echo "$DIFF" | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
             exit 2
           fi
           echo "Schema and migrations agree."
